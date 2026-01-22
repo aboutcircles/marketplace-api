@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+      <TargetFramework>net10.0</TargetFramework>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Circles.Profiles.Aggregation" Version="1.0.0" />
+        <PackageReference Include="Circles.Profiles.Interfaces" Version="1.0.0" />
+        <PackageReference Include="Circles.Profiles.Market" Version="1.0.0" />
+        <PackageReference Include="Circles.Profiles.Models" Version="1.0.0" />
+        <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.0" />
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.2" />
+        <PackageReference Include="Npgsql" Version="10.0.1" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Content Update="appsettings.json">
+        <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+      </Content>
+      <Content Update="appsettings.Development.json">
+        <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+      </Content>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Circles.Market.Shared\Circles.Market.Shared.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Reference Include="Circles.Profiles.Models">
+        <HintPath>..\..\ExtensibleProfilesDemo\Circles.Profiles.Models\bin\Debug\net9.0\Circles.Profiles.Models.dll</HintPath>
+      </Reference>
+    </ItemGroup>
+
+</Project>

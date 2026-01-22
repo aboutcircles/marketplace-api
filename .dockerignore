@@ -1,0 +1,10 @@
+.git
+**/bin
+**/obj
+**/TestResults
+.idea
+.vscode
+**/*.nupkg
+.env
+concatenated_sources.txt
+.state/

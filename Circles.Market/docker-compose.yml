@@ -1,0 +1,101 @@
+services:
+  market-api:
+    build:
+      context: ..
+      dockerfile: Circles.Market/market-api.Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      RPC: https://rpc.aboutcircles.com/
+      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_MARKET_API:-circles_market_api};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+      IPFS_RPC_URL: ${IPFS_RPC_URL:-http://ipfs:5001/api/v0/}
+      IPFS_RPC_BEARER: ${IPFS_RPC_BEARER:-local-dev}
+      IPFS_GATEWAY_URL: ${IPFS_GATEWAY_URL:-http://ipfs:8080/}
+      MARKET_JWT_SECRET: ${MARKET_JWT_SECRET}
+      MARKET_AUTH_ALLOWED_DOMAINS: ${MARKET_AUTH_ALLOWED_DOMAINS}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+    ports:
+      - "5084:5084"
+    volumes:
+      - .state/dpkeys:/root/.aspnet/DataProtection-Keys
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+      market-adapter-codedispenser:
+        condition: service_started
+      ipfs:
+        condition: service_started
+
+  market-adapter-odoo:
+    build:
+      context: ..
+      dockerfile: Circles.Market/market-adapter-odoo.Dockerfile
+    environment:
+      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_ODOO:-circles_odoo};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5678:5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+
+  market-adapter-codedispenser:
+    build:
+      context: ..
+      dockerfile: Circles.Market/market-adapter-codedispenser.Dockerfile
+    environment:
+      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_CODEDISP:-circles_codedisp};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+      CODE_POOLS_DIR: ${CODE_POOLS_DIR:-}
+    ports:
+      - "5680:5680"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+
+  init-db:
+    image: postgres:17-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./provision-dbs.sh:/scripts/provision-dbs.sh:ro
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - DB_MARKET_API=${DB_MARKET_API:-circles_market_api}
+      - DB_CODEDISP=${DB_CODEDISP:-circles_codedisp}
+      - DB_ODOO=${DB_ODOO:-circles_odoo}
+    command: ["sh", "/scripts/provision-dbs.sh"]
+    restart: "no"
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - 25433:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ipfs:
+    image: ipfs/kubo:latest
+    ports:
+      - "25001:5001"
+      - "28081:8080"
+    volumes:
+      - ipfs_data:/data/ipfs
+
+volumes:
+  pgdata:
+  ipfs_data:

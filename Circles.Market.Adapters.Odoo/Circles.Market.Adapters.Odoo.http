@@ -1,0 +1,6 @@
+@Circles.Market.Adapters.Odoo_HostAddress = http://localhost:5026
+
+GET {{Circles.Market.Adapters.Odoo_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
