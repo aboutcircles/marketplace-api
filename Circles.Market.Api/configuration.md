@@ -124,7 +124,7 @@ echo "$SHA_HEX"
 This authorizes Market API to call CodeDispenser:
 
 ```bash
-psql "postgres://postgres:postgres@localhost:5432/circles_codedisp" <<SQL
+psql "postgres://postgres:postgres@localhost:25433/circles_codedisp" <<SQL
 INSERT INTO trusted_callers (
   caller_id,
   api_key_sha256,
@@ -172,7 +172,7 @@ For local CodeDispenser at `http://localhost:5680`, origin is:
 Now insert two rows (fulfillment + inventory):
 
 ```bash
-psql "postgres://postgres:postgres@localhost:5432/circles_market" <<SQL
+psql "postgres://postgres:postgres@localhost:25433/circles_market" <<SQL
 INSERT INTO outbound_service_credentials (
   id, service_kind, endpoint_origin, path_prefix,
   seller_address, chain_id,
