@@ -95,6 +95,16 @@ services:
       - "28081:8080"
     volumes:
       - ipfs_data:/data/ipfs
+      - ./scripts/container-init.d:/container-init.d:ro
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:5001/api/v0/version >/dev/null 2>&1" ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    environment:
+      IPFS_BOOTSTRAP_PEERS: ${IPFS_BOOTSTRAP_PEERS:-}
+      IPFS_BOOTSTRAP_STRICT: ${IPFS_BOOTSTRAP_STRICT:-false}
 
 volumes:
   pgdata:

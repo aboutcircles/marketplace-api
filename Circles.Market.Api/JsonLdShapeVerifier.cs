@@ -154,6 +154,11 @@ public sealed class JsonLdShapeVerifier : IJsonLdShapeVerifier
                 return ValidateNamespaceChunk(root, out reason);
             }
 
+            if (type.Equals("Snippet", StringComparison.Ordinal) && ctx.Contains("https://aboutcircles.com/contexts/circles-gist/"))
+            {
+                return ValidateSnippet(root, out reason);
+            }
+
             reason = $"Unsupported JSON-LD shape: @type='{type}', @context='[" + string.Join(",", ctx) + "]'";
             return false;
 
@@ -825,6 +830,34 @@ public sealed class JsonLdShapeVerifier : IJsonLdShapeVerifier
                 !el.TryGetProperty("signature", out var _))
             {
                 reason = "NamespaceChunk.links[] must at least contain name, cid, signerAddress, signature";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ValidateSnippet(JsonElement root, out string? reason)
+    {
+        reason = null;
+
+        if (!root.TryGetProperty("content", out var contentProp) || contentProp.ValueKind != JsonValueKind.String)
+        {
+            reason = "Snippet.content is required";
+            return false;
+        }
+
+        if (root.TryGetProperty("createdAt", out var _) && !TryGetLong(root, "createdAt", out _))
+        {
+            reason = "Snippet.createdAt must be a unix timestamp when present";
+            return false;
+        }
+
+        if (root.TryGetProperty("source", out var sourceProp))
+        {
+            if (sourceProp.ValueKind != JsonValueKind.Object)
+            {
+                reason = "Snippet.source must be an object when present";
                 return false;
             }
         }
