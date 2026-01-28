@@ -1,0 +1,67 @@
+name: Publish Docker Images
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Market API
+            slug: market-api
+            image: market-api
+            dockerfile: ./Circles.Market/market-api.Dockerfile
+          - name: CodeDispenser
+            slug: market-adapter-codedispenser
+            image: market-adapter-codedispenser
+            dockerfile: ./Circles.Market/market-adapter-codedispenser.Dockerfile
+          - name: Odoo Adapter
+            slug: market-adapter-odoo
+            image: market-adapter-odoo
+            dockerfile: ./Circles.Market/market-adapter-odoo.Dockerfile
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_ABOUTCIRCLES_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_ABOUTCIRCLES_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Metadata (${{ matrix.name }})
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_ABOUTCIRCLES_USERNAME }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: Build and Push (${{ matrix.name }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          pull: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
