@@ -21,17 +21,17 @@ public static class OutboundGuards
         }
         catch
         {
-            // If we can't resolve, better safe than sorry? 
-            // Or maybe it's just an invalid host. 
+            // If we can't resolve, better safe than sorry?
+            // Or maybe it's just an invalid host.
             // For SSRF protection, we block if we can't be sure it's public.
-            return true; 
+            return true;
         }
     }
 
     private static bool IsPrivateOrLocal(IPAddress ip)
     {
         if (IPAddress.IsLoopback(ip)) return true;
-        if (ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.None) || 
+        if (ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.None) ||
             ip.Equals(IPAddress.IPv6Any) || ip.Equals(IPAddress.IPv6None)) return true;
 
         if (ip.AddressFamily == AddressFamily.InterNetwork)
@@ -79,7 +79,7 @@ public static class OutboundGuards
         var stream = await content.ReadAsStreamAsync(ct);
         int initialCapacity = len.HasValue && len.Value <= maxBytes ? (int)len.Value : Math.Min(8192, maxBytes);
         using var ms = new System.IO.MemoryStream(initialCapacity);
-        
+
         var buffer = new byte[Math.Min(8192, maxBytes)];
         int totalRead = 0;
         int read;
@@ -177,6 +177,7 @@ public static class OutboundGuards
 
             redirectsFollowed++;
 
+            // TODO: What's the downside of not allowing redirects?
             // Emulate common HttpClient redirect semantics:
             bool switchToGet =
                 status == HttpStatusCode.SeeOther ||
@@ -198,7 +199,7 @@ public static class OutboundGuards
         }
     }
 
-    // TODO: To fully protect against DNS rebinding, we should implement a ConnectCallback 
+    // TODO: To fully protect against DNS rebinding, we should implement a ConnectCallback
     // in SocketsHttpHandler that re-validates the chosen IP address at connect time.
 
     public static int GetAvailabilityTimeoutMs() => GetEnvInt("OUTBOUND_AVAILABILITY_TIMEOUT_MS", 800);

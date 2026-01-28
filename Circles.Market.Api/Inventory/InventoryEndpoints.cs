@@ -41,7 +41,7 @@ public static class InventoryEndpoints
         string sku,
         IProductResolver resolver,
         IHttpClientFactory http,
-        Circles.Market.Api.Auth.IOutboundServiceAuthProvider authProvider,
+        Auth.IOutboundServiceAuthProvider authProvider,
         IOneOffSalesStore oneOffStore,
         HttpContext ctx,
         CancellationToken ct)
@@ -257,7 +257,7 @@ public static class InventoryEndpoints
     }
 
     private static async Task<(bool IsError, string? Error, string? Value)> FetchAvailabilityAsync(
-        IHttpClientFactory http, Circles.Market.Api.Auth.IOutboundServiceAuthProvider authProvider, string url,
+        IHttpClientFactory http, Auth.IOutboundServiceAuthProvider authProvider, string url,
         CancellationToken ct)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !OutboundGuards.IsHttpOrHttps(uri))

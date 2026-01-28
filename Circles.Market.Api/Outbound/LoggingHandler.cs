@@ -16,18 +16,24 @@ public class LoggingHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("HTTP Request: {Method} {Uri}", request.Method, request.RequestUri);
+            if (request.Content != null)
+            {
+                var requestBody = await request.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogDebug("HTTP Request Body: {Body}", requestBody);
+            }
+        }
+
         var response = await base.SendAsync(request, cancellationToken);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
+            _logger.LogDebug("HTTP Response: {StatusCode} for {Method} {Uri}", response.StatusCode, request.Method, request.RequestUri);
+
             try
             {
-                // We don't want to consume the stream if it's not already buffered,
-                // but in this project most responses are read via ReadWithLimitAsync anyway.
-                // However, the handler runs before the caller gets the response.
-                // If we read it here, we might break the caller if they expect to read the stream themselves.
-                // But for logging the first 500 chars, we can try to peek or use LoadIntoBufferAsync.
-
                 if (response.Content != null)
                 {
                     await response.Content.LoadIntoBufferAsync();
