@@ -162,7 +162,12 @@ builder.Services.AddSingleton<IJsonLdShapeVerifier, JsonLdShapeVerifier>();
 // Aggregator service
 builder.Services.AddSingleton(sp =>
     new Circles.Profiles.Aggregation.BasicAggregator(
-        sp.GetRequiredService<IIpfsStore>(),
+        new TimeoutIpfsStore(
+            sp.GetRequiredService<IIpfsStore>(),
+            TimeSpan.FromMilliseconds(
+                int.TryParse(Environment.GetEnvironmentVariable("CATALOG_AVATAR_PROFILE_TIMEOUT_MS"), out var ms) && ms > 0
+                    ? ms
+                    : 250)),
         sp.GetRequiredService<INameRegistry>(),
         sp.GetRequiredService<ISignatureVerifier>()));
 builder.Services.AddSingleton<CatalogReducer>();
