@@ -3,20 +3,7 @@ services:
     build:
       context: ..
       dockerfile: Circles.Market/market-api.Dockerfile
-    environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      RPC: https://rpc.aboutcircles.com/
-      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_MARKET_API:-circles_market_api};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
-      IPFS_RPC_URL: ${IPFS_RPC_URL:-http://ipfs:5001/api/v0/}
-      IPFS_RPC_BEARER: ${IPFS_RPC_BEARER:-local-dev}
-      IPFS_GATEWAY_URL: ${IPFS_GATEWAY_URL:-http://ipfs:8080/}
-      MARKET_JWT_SECRET: ${MARKET_JWT_SECRET}
-      MARKET_AUTH_ALLOWED_DOMAINS: ${MARKET_AUTH_ALLOWED_DOMAINS}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
-    ports:
-      - "5084:5084"
-    volumes:
-      - .state/dpkeys:/root/.aspnet/DataProtection-Keys
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -24,37 +11,75 @@ services:
         condition: service_completed_successfully
       market-adapter-codedispenser:
         condition: service_started
-      ipfs:
-        condition: service_started
+    expose:
+      - ${MARKET_API_PORT:-5084}
+    env_file:
+      - .env
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      # RPC endpoints: RPC for standard eth calls, CIRCLES_RPC for circles_query (optional, defaults to RPC)
+      RPC: ${RPC:-https://rpc.aboutcircles.com/}
+      CIRCLES_RPC: ${CIRCLES_RPC:-}
+      POSTGRES_CONNECTION: ${POSTGRES_CONNECTION:-Host=postgres;Port=5432;Database=circles_market;Username=postgres;Password=postgres}
+      IPFS_RPC_URL: ${IPFS_RPC_URL:-https://rpc.filebase.io/api/v0/}
+      IPFS_RPC_BEARER: ${IPFS_RPC_BEARER:-}
+      IPFS_GATEWAY_URL: ${IPFS_GATEWAY_URL:-https://cloudflare-ipfs.com/}
+      PORT: ${MARKET_API_PORT:-5084}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # JWT authentication via external auth-service (RS256/JWKS)
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-https://staging.circlesubi.network/auth}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
+    networks:
+      default:
+      circles-gnosis:
+        aliases:
+          - market-api
 
   market-adapter-odoo:
+    profiles: [odoo]  # Only starts when COMPOSE_PROFILES includes 'odoo'
     build:
       context: ..
       dockerfile: Circles.Market/market-adapter-odoo.Dockerfile
-    environment:
-      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_ODOO:-circles_odoo};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
-    ports:
-      - "5678:5678"
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       init-db:
         condition: service_completed_successfully
+    expose:
+      - ${ODOO_ADAPTER_PORT:-5678}
+    env_file:
+      - .env
+    environment:
+      POSTGRES_CONNECTION: ${POSTGRES_CONNECTION:-Host=postgres;Port=5432;Database=circles_market;Username=postgres;Password=postgres}
+      PORT: ${ODOO_ADAPTER_PORT:-5678}
 
   market-adapter-codedispenser:
     build:
       context: ..
       dockerfile: Circles.Market/market-adapter-codedispenser.Dockerfile
-    environment:
-      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_CODEDISP:-circles_codedisp};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
-      CODE_POOLS_DIR: ${CODE_POOLS_DIR:-}
-    ports:
-      - "5680:5680"
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
       init-db:
         condition: service_completed_successfully
+    expose:
+      - ${CODE_DISPENSER_PORT:-5680}
+    env_file:
+      - .env
+    environment:
+      POSTGRES_CONNECTION: ${POSTGRES_CONNECTION:-Host=postgres;Port=5432;Database=circles_market;Username=postgres;Password=postgres}
+      CODE_POOLS_DIR: ${CODE_POOLS_DIR:-/app/pools}
+      PORT: ${CODE_DISPENSER_PORT:-5680}
+    volumes:
+      - ${CODE_POOLS_HOST_DIR:-./code-pools}:${CODE_POOLS_DIR:-/app/pools}:ro
+    networks:
+      default:
+      circles-gnosis:
+        aliases:
+          - market-adapter-codedispenser
 
   init-db:
     image: postgres:17-alpine
@@ -64,11 +89,14 @@ services:
     volumes:
       - ./provision-dbs.sh:/scripts/provision-dbs.sh:ro
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - DB_MARKET_API=${DB_MARKET_API:-circles_market_api}
-      - DB_CODEDISP=${DB_CODEDISP:-circles_codedisp}
-      - DB_ODOO=${DB_ODOO:-circles_odoo}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Single database for all market services
+      DB_MARKET_API: ${DB_MARKET_API:-circles_market}
+      DB_CODEDISP: ${DB_CODEDISP:-circles_market}
+      DB_ODOO: ${DB_ODOO:-circles_market}
     command: ["sh", "/scripts/provision-dbs.sh"]
     restart: "no"
 
@@ -76,36 +104,19 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-    ports:
-      - 25433:5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-circles_market}
+    expose:
+      - 5432
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - .state/pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  ipfs:
-    image: ipfs/kubo:latest
-    ports:
-      - "25001:5001"
-      - "28081:8080"
-    volumes:
-      - ipfs_data:/data/ipfs
-      - ./scripts/container-init.d:/container-init.d:ro
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:5001/api/v0/version >/dev/null 2>&1" ]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-    environment:
-      IPFS_BOOTSTRAP_PEERS: ${IPFS_BOOTSTRAP_PEERS:-}
-      IPFS_BOOTSTRAP_STRICT: ${IPFS_BOOTSTRAP_STRICT:-false}
-
-volumes:
-  pgdata:
-  ipfs_data:
+networks:
+  circles-gnosis:
+    external: true
