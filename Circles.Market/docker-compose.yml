@@ -14,7 +14,7 @@ services:
     expose:
       - ${MARKET_API_PORT:-5084}
     env_file:
-      - .env
+      - ../.env
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       # RPC endpoints: RPC for standard eth calls, CIRCLES_RPC for circles_query (optional, defaults to RPC)
@@ -50,7 +50,7 @@ services:
     expose:
       - ${ODOO_ADAPTER_PORT:-5678}
     env_file:
-      - .env
+      - ../.env
     environment:
       POSTGRES_CONNECTION: ${POSTGRES_CONNECTION:-Host=postgres;Port=5432;Database=circles_market;Username=postgres;Password=postgres}
       PORT: ${ODOO_ADAPTER_PORT:-5678}
@@ -68,7 +68,7 @@ services:
     expose:
       - ${CODE_DISPENSER_PORT:-5680}
     env_file:
-      - .env
+      - ../.env
     environment:
       POSTGRES_CONNECTION: ${POSTGRES_CONNECTION:-Host=postgres;Port=5432;Database=circles_market;Username=postgres;Password=postgres}
       CODE_POOLS_DIR: ${CODE_POOLS_DIR:-/app/pools}
