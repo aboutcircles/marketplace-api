@@ -53,6 +53,7 @@ public sealed class CirclesPaymentsPoller : BackgroundService
     private readonly IHttpClientFactory _hcf;
     private readonly IOrderPaymentFlow _paymentFlow;
     private readonly string _rpcUrl;
+    private readonly string _circlesRpcUrl;
     private readonly string _pgConn;
     private readonly long _chainId;
     private readonly TimeSpan _interval;
@@ -77,6 +78,8 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         // Configuration consistency: read exclusively from environment variables (same as Program.cs)
         _rpcUrl = Environment.GetEnvironmentVariable("RPC")
                   ?? throw new Exception("RPC env variable is required for payments poller");
+        // CIRCLES_RPC is optional; if not set, use RPC for circles_query calls
+        _circlesRpcUrl = Environment.GetEnvironmentVariable("CIRCLES_RPC") ?? _rpcUrl;
         _pgConn = Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")
                   ?? throw new Exception("POSTGRES_CONNECTION env variable is required for payments poller");
         _chainId = long.TryParse(Environment.GetEnvironmentVariable("CHAIN_ID"), out var chain)
@@ -170,7 +173,8 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         var reqModel = BuildQuery(lastBlock, lastTx, lastLog);
         var env = new CirclesQueryEnvelope<CirclesQueryRequest> { Params = new[] { reqModel } };
 
-        using (var req = new HttpRequestMessage(HttpMethod.Post, _rpcUrl)
+        // Use CIRCLES_RPC for circles_query calls (may differ from RPC for eth_* calls)
+        using (var req = new HttpRequestMessage(HttpMethod.Post, _circlesRpcUrl)
                {
                    Content = new StringContent(JsonSerializer.Serialize(env, JsonSerializerOptions.Web), Encoding.UTF8,
                        "application/json")
