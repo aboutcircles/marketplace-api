@@ -130,8 +130,8 @@ builder.Services.AddHttpClient("inventory", client =>
     client.DefaultRequestHeaders.Clear();
 });
 
-builder.Services.AddSingleton<Circles.Market.Api.Auth.IOutboundServiceAuthProvider>(sp =>
-    new Circles.Market.Api.Auth.PostgresOutboundServiceAuthProvider(pgConn!, sp.GetRequiredService<ILogger<Circles.Market.Api.Auth.PostgresOutboundServiceAuthProvider>>(), sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>()));
+builder.Services.AddSingleton<IOutboundServiceAuthProvider>(sp =>
+    new PostgresOutboundServiceAuthProvider(pgConn!, sp.GetRequiredService<ILogger<PostgresOutboundServiceAuthProvider>>(), sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>()));
 
 builder.Services.AddSingleton<IOrderFulfillmentClient, HttpOrderFulfillmentClient>();
 
@@ -154,8 +154,8 @@ builder.Services.AddTransient<Circles.Market.Api.Outbound.LoggingHandler>(sp =>
 builder.Services.AddSingleton<ILiveInventoryClient, LiveInventoryClient>();
 
 // One-off sales store for sold-once default availability
-builder.Services.AddSingleton<Circles.Market.Api.Inventory.IOneOffSalesStore>(sp =>
-    new Circles.Market.Api.Inventory.PostgresOneOffSalesStore(pgConn!, sp.GetRequiredService<ILogger<Circles.Market.Api.Inventory.PostgresOneOffSalesStore>>()));
+builder.Services.AddSingleton<IOneOffSalesStore>(sp =>
+    new PostgresOneOffSalesStore(pgConn!, sp.GetRequiredService<ILogger<PostgresOneOffSalesStore>>()));
 
 // JSON-LD shape verification for pin endpoint (allow only user-generated shapes)
 builder.Services.AddSingleton<IJsonLdShapeVerifier, JsonLdShapeVerifier>();
