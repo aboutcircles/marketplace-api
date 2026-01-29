@@ -13,6 +13,7 @@ using Circles.Market.Api.Auth;
 using Circles.Market.Api.Cart.Validation;
 using Circles.Market.Api.Fulfillment;
 using Circles.Market.Api.Pin;
+using System.Data.Common;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -162,7 +163,12 @@ builder.Services.AddSingleton<IJsonLdShapeVerifier, JsonLdShapeVerifier>();
 // Aggregator service
 builder.Services.AddSingleton(sp =>
     new Circles.Profiles.Aggregation.BasicAggregator(
-        sp.GetRequiredService<IIpfsStore>(),
+        new TimeoutIpfsStore(
+            sp.GetRequiredService<IIpfsStore>(),
+            TimeSpan.FromMilliseconds(
+                int.TryParse(Environment.GetEnvironmentVariable("CATALOG_AVATAR_PROFILE_TIMEOUT_MS"), out var ms) && ms > 0
+                    ? ms
+                    : 1000)),
         sp.GetRequiredService<INameRegistry>(),
         sp.GetRequiredService<ISignatureVerifier>()));
 builder.Services.AddSingleton<CatalogReducer>();
@@ -200,6 +206,55 @@ builder.Services.AddCors(options =>
 builder.Services.AddJwtAuth();
 
 var app = builder.Build();
+
+static string SafeUrl(string url)
+{
+    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        return "[invalid url]";
+
+    // Avoid leaking userinfo/query/fragment (often used for tokens)
+    var hostPort = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+    return $"{uri.Scheme}://{hostPort}";
+}
+
+static string SafeToken(string? token)
+{
+    if (string.IsNullOrEmpty(token))
+        return "[empty]";
+    return $"[redacted,len={token.Length}]";
+}
+
+static string SafeConnectionString(string conn)
+{
+    try
+    {
+        var b = new DbConnectionStringBuilder { ConnectionString = conn };
+        foreach (var k in new[] { "Password", "Pwd", "PWD", "password", "pwd" })
+        {
+            if (b.ContainsKey(k))
+                b[k] = "[redacted]";
+        }
+        return b.ConnectionString;
+    }
+    catch
+    {
+        return $"[redacted,len={conn.Length}]";
+    }
+}
+
+// Log startup settings (redacted where needed)
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "RPC", SafeUrl(chainRpcUrl));
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_RPC_URL", SafeUrl(ipfsRpcUrl));
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_RPC_BEARER", SafeToken(ipfsRpcBearer));
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_GATEWAY_URL", SafeUrl(ipfsGatewayUrl));
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "POSTGRES_CONNECTION", SafeConnectionString(pgConn!));
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "DB_AUTO_MIGRATE", autoMigrate);
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "CATALOG_AVATAR_PROFILE_TIMEOUT_MS",
+    Environment.GetEnvironmentVariable("CATALOG_AVATAR_PROFILE_TIMEOUT_MS") ?? "[unset]");
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "ASPNETCORE_URLS",
+    Environment.GetEnvironmentVariable("ASPNETCORE_URLS") ?? "[unset]");
+app.Logger.LogInformation("[startup-config] {Key}={Value}", "PORT",
+    Environment.GetEnvironmentVariable("PORT") ?? "[unset]");
 
 // Ensure outbound credentials schema
 using (var scope = app.Services.CreateScope())
