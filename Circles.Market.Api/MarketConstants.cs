@@ -44,7 +44,7 @@ public static class MarketConstants
     public static class Limits
     {
         // 8 MiB cap for uploads (pin and canonicalize endpoints)
-        public static int MaxUploadBytes => Circles.Profiles.Models.ProtocolLimits.MaxObjectBytes;
+        public static int MaxUploadBytes => Profiles.Models.ProtocolLimits.MaxObjectBytes;
     }
 
     public static class IdPrefixes

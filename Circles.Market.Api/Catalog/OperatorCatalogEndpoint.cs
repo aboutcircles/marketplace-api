@@ -11,7 +11,7 @@ namespace Circles.Market.Api.Catalog;
 /// Aggregates verified product links across many avatars under the operator namespace,
 /// applies a time window and chain domain, reduces to a deterministic AggregatedCatalog,
 /// and returns a **paged** JSON-LD object.
-/// 
+///
 /// Query:
 /// - avatars: repeated query param, at least one (e.g. ?avatars=0x..&avatars=0x..)
 /// - chainId: long (default 100)
@@ -41,18 +41,15 @@ public static class OperatorCatalogEndpoint
     {
         try
         {
+            var avatars = ctx.Request.Query["avatars"].Where(a => !string.IsNullOrWhiteSpace(a)).Select(a => a!).ToArray();
+
             logger?.LogInformation(
                 "Operator catalog request op={Op} avatars={Avatars} chainId={Chain} start={Start} end={End} pageSize={PageSize} cursor={Cursor} offset={Offset}",
                 op,
-                string.Join(",", ctx.Request.Query["avatars"].Where(a => !string.IsNullOrWhiteSpace(a))),
+                string.Join(",", avatars),
                 chainId, start, end, pageSize, cursor, offset);
-            var avatarsRaw = ctx.Request.Query["avatars"];
-            var avatarList = avatarsRaw
-                .Where(a => !string.IsNullOrWhiteSpace(a))
-                .Select(a => a!)
-                .ToArray();
 
-            bool hasAvatars = avatarList is { Length: > 0 };
+            bool hasAvatars = avatars is { Length: > 0 };
             if (!hasAvatars)
             {
                 logger?.LogWarning("Bad request: missing avatars parameter");
@@ -65,9 +62,9 @@ public static class OperatorCatalogEndpoint
             int maxAvatars = int.TryParse(Environment.GetEnvironmentVariable("CATALOG_MAX_AVATARS"), out var cap) && cap > 0
                 ? cap
                 : 500;
-            if (avatarList.Length > maxAvatars)
+            if (avatars.Length > maxAvatars)
             {
-                logger?.LogWarning("Bad request: avatars exceeds cap {Count} > {Max}", avatarList.Length, maxAvatars);
+                logger?.LogWarning("Bad request: avatars exceeds cap {Count} > {Max}", avatars.Length, maxAvatars);
                 await WriteError(ctx, StatusCodes.Status400BadRequest, $"avatars must be <= {maxAvatars}");
                 return;
             }
@@ -132,7 +129,7 @@ public static class OperatorCatalogEndpoint
             }
 
             var (avatarsScanned, products, errors) =
-                await opCatalog.AggregateAsync(op, avatarList, chain, winStart, winEnd, ct);
+                await opCatalog.AggregateAsync(op, avatars, chain, winStart, winEnd, ct);
 
             int total = products.Count;
 
@@ -151,7 +148,7 @@ public static class OperatorCatalogEndpoint
             {
                 var basePath = $"/api/operator/{WebUtility.UrlEncode(op)}/catalog";
                 string nextUrl = $"{basePath}?pageSize={size}&cursor={WebUtility.UrlEncode(next)}";
-                foreach (var av in avatarList)
+                foreach (var av in avatars)
                 {
                     nextUrl += $"&avatars={WebUtility.UrlEncode(av)}";
                 }
