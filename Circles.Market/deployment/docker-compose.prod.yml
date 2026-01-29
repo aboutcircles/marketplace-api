@@ -1,0 +1,252 @@
+services:
+  market-api:
+    image: aboutcircles/market-api:${MARKET_API_TAG}
+    restart: unless-stopped
+    entrypoint: ["dotnet", "Circles.Market.Api.dll"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      PORT: ${MARKET_API_PORT}
+      CIRCLES_AGG_IPFS_READ_TIMEOUT_MS: 1000
+      RPC: ${RPC}
+      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_MARKET_API};Username=${DB_MARKET_API_USER};Password=${DB_MARKET_API_PASSWORD}
+      IPFS_RPC_URL: ${IPFS_RPC_URL}
+      IPFS_RPC_BEARER: ${IPFS_RPC_BEARER}
+      IPFS_GATEWAY_URL: ${IPFS_GATEWAY_URL}
+      MARKET_JWT_SECRET: ${MARKET_JWT_SECRET}
+      MARKET_AUTH_ALLOWED_DOMAINS: ${MARKET_AUTH_ALLOWED_DOMAINS}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+    env_file:
+      - .env
+    volumes:
+      - .state/dpkeys:/root/.aspnet/DataProtection-Keys
+    networks:
+      - internal
+      - egress
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  market-api-health:
+    image: curlimages/curl:${CURL_TAG}
+    restart: unless-stopped
+    command: ["sh", "-c", "sleep infinity"]
+    networks:
+      - internal
+    depends_on:
+      market-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://market-api:${MARKET_API_PORT}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  market-adapter-odoo:
+    image: aboutcircles/market-adapter-odoo:${MARKET_ADAPTER_ODOO_TAG}
+    restart: unless-stopped
+    entrypoint: ["dotnet", "Circles.Market.Adapters.Odoo.dll"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      PORT: ${MARKET_ODOO_ADAPTER_PORT}
+      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_ODOO};Username=${DB_ODOO_USER};Password=${DB_ODOO_PASSWORD}
+    env_file:
+      - .env
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  market-adapter-odoo-health:
+    image: curlimages/curl:${CURL_TAG}
+    restart: unless-stopped
+    command: ["sh", "-c", "sleep infinity"]
+    networks:
+      - internal
+    depends_on:
+      market-adapter-odoo:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://market-adapter-odoo:${MARKET_ODOO_ADAPTER_PORT}/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  market-adapter-codedispenser:
+    image: aboutcircles/market-adapter-codedispenser:${MARKET_ADAPTER_CODEDISP_TAG}
+    restart: unless-stopped
+    entrypoint: ["dotnet", "Circles.Market.Adapters.CodeDispenser.dll"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      PORT: ${MARKET_CODE_DISPENSER_PORT}
+      POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_CODEDISP};Username=${DB_CODEDISP_USER};Password=${DB_CODEDISP_PASSWORD}
+      CODE_POOLS_DIR: ${CODE_POOLS_DIR}
+    env_file:
+      - .env
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  market-adapter-codedispenser-health:
+    image: curlimages/curl:${CURL_TAG}
+    restart: unless-stopped
+    command: ["sh", "-c", "sleep infinity"]
+    networks:
+      - internal
+    depends_on:
+      market-adapter-codedispenser:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://market-adapter-codedispenser:${MARKET_CODE_DISPENSER_PORT}/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  init-db:
+    image: postgres:${POSTGRES_TAG}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./scripts/provision-dbs.sh:/scripts/provision-dbs.sh:ro
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_MARKET_API=${DB_MARKET_API}
+      - DB_CODEDISP=${DB_CODEDISP}
+      - DB_ODOO=${DB_ODOO}
+      - DB_MARKET_API_USER=${DB_MARKET_API_USER}
+      - DB_CODEDISP_USER=${DB_CODEDISP_USER}
+      - DB_ODOO_USER=${DB_ODOO_USER}
+      - DB_MARKET_API_PASSWORD=${DB_MARKET_API_PASSWORD}
+      - DB_CODEDISP_PASSWORD=${DB_CODEDISP_PASSWORD}
+      - DB_ODOO_PASSWORD=${DB_ODOO_PASSWORD}
+    env_file:
+      - .env
+    command: ["sh", "/scripts/provision-dbs.sh"]
+    networks:
+      - internal
+    restart: "no"
+
+  postgres:
+    image: postgres:${POSTGRES_TAG}
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    env_file:
+      - .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:${NGINX_TAG}
+    restart: unless-stopped
+    ports:
+      - "18080:18080"
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+    env_file:
+      - .env
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/templates:ro
+    networks:
+      - public
+      - internal
+    depends_on:
+      market-api-health:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  public:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+  internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.1.0.0/16
+  egress:
+    driver: bridge
+    internal: false
+    enable_ipv4: true
+    ipam:
+      config:
+        - subnet: 10.2.0.0/24
+
+volumes:
+  pgdata: {}
