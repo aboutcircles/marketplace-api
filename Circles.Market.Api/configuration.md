@@ -42,7 +42,7 @@ Repo layout assumption:
 
 * `Circles.Market.Api/`
 * `Circles.Market.Adapters.CodeDispenser/`
-* `Circles.Market/` (contains Docker Compose)
+* `/` (contains Docker Compose)
 
 ---
 
@@ -73,7 +73,7 @@ Market API needs to be authorized to call CodeDispenser. We provide a helper scr
 
 ```bash
 # From the project root or Circles.Market directory
-./Circles.Market/scripts/setup-market-codedisp-auth.sh
+./scripts/setup-market-codedisp-auth.sh
 ```
 
 This script:
@@ -89,12 +89,12 @@ Since CodeDispenser mapping is now DB-driven, you need to insert mappings into t
 
 ### Create a mapping
 ```bash
-./Circles.Market/scripts/set-codedisp-mapping.sh <seller_address> <sku> <pool_id>
+./scripts/set-codedisp-mapping.sh <seller_address> <sku> <pool_id>
 ```
 
 ### Seed a code pool
 ```bash
-./Circles.Market/scripts/seed-code-pool.sh <pool_id> <test_code>
+./scripts/seed-code-pool.sh <pool_id> <test_code>
 ```
 
 ---
@@ -103,9 +103,9 @@ Since CodeDispenser mapping is now DB-driven, you need to insert mappings into t
 
 Use the helper script to jump into any of the service databases:
 ```bash
-./Circles.Market/scripts/psql.sh market
-./Circles.Market/scripts/psql.sh codedisp
-./Circles.Market/scripts/psql.sh odoo
+./scripts/psql.sh market
+./scripts/psql.sh codedisp
+./scripts/psql.sh odoo
 ```
 
 ---

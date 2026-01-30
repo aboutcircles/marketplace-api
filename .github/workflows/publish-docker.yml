@@ -20,15 +20,15 @@ jobs:
           - name: Market API
             slug: market-api
             image: market-api
-            dockerfile: ./Circles.Market/market-api.Dockerfile
+            dockerfile: ./market-api.Dockerfile
           - name: CodeDispenser
             slug: market-adapter-codedispenser
             image: market-adapter-codedispenser
-            dockerfile: ./Circles.Market/market-adapter-codedispenser.Dockerfile
+            dockerfile: ./market-adapter-codedispenser.Dockerfile
           - name: Odoo Adapter
             slug: market-adapter-odoo
             image: market-adapter-odoo
-            dockerfile: ./Circles.Market/market-adapter-odoo.Dockerfile
+            dockerfile: ./market-adapter-odoo.Dockerfile
 
     steps:
       - name: Checkout Code

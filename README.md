@@ -65,4 +65,4 @@ You can customize the configuration by creating a `.env` file in the `Circles.Ma
 
 ## License
 
-[Insert License Information Here]
+AGPLv3
