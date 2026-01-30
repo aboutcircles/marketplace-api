@@ -4,13 +4,9 @@ public sealed record MarketRouteConfig(
     long ChainId,
     string SellerAddress,
     string Sku,
-    string? InventoryUrl,
-    string? AvailabilityUrl,
-    string? FulfillmentUrl,
+    string? OfferType,
     bool IsOneOff,
     bool Enabled)
 {
-    public bool IsConfigured => Enabled && (IsOneOff || !string.IsNullOrWhiteSpace(InventoryUrl) ||
-                                           !string.IsNullOrWhiteSpace(AvailabilityUrl) ||
-                                           !string.IsNullOrWhiteSpace(FulfillmentUrl));
+    public bool IsConfigured => Enabled && (IsOneOff || !string.IsNullOrWhiteSpace(OfferType));
 }

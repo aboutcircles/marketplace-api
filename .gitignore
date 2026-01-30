@@ -83,3 +83,6 @@ Thumbs.db
 
 # Project state
 .state/
+
+profiles.switcher.json
+.config

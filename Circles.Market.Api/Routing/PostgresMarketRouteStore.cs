@@ -26,13 +26,33 @@ public sealed class PostgresMarketRouteStore : IMarketRouteStore
             await conn.OpenAsync(ct);
 
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"CREATE TABLE IF NOT EXISTS market_service_routes (
+            cmd.CommandText = @"
+CREATE TABLE IF NOT EXISTS offer_types (
+  offer_type                text    NOT NULL PRIMARY KEY,
+  inventory_url_template     text    NULL,
+  availability_url_template  text    NULL,
+  fulfillment_url_template   text    NULL,
+  enabled                   boolean NOT NULL DEFAULT true,
+  created_at                timestamptz NOT NULL DEFAULT now(),
+  updated_at                timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_offer_types_enabled
+  ON offer_types(enabled, offer_type);
+
+CREATE TABLE IF NOT EXISTS market_service_routes (
   chain_id         bigint  NOT NULL,
   seller_address   text    NOT NULL,
   sku              text    NOT NULL,
+
+  -- Deprecated: per-row URLs (kept for backward compatibility; no longer read)
   inventory_url    text    NULL,
   availability_url text    NULL,
   fulfillment_url  text    NULL,
+
+  -- New: adapter family selector
+  offer_type       text    NULL,
+
   is_one_off       boolean NOT NULL DEFAULT false,
   enabled          boolean NOT NULL DEFAULT true,
   created_at       timestamptz NOT NULL DEFAULT now(),
@@ -40,8 +60,31 @@ public sealed class PostgresMarketRouteStore : IMarketRouteStore
   PRIMARY KEY (chain_id, seller_address, sku)
 );
 
+-- Ensure offer_type exists even if table was created before this change
+ALTER TABLE market_service_routes
+  ADD COLUMN IF NOT EXISTS offer_type text NULL;
+
 CREATE INDEX IF NOT EXISTS ix_market_routes_enabled
   ON market_service_routes(enabled, chain_id, seller_address, sku);
+
+-- Seed canonical offer types (operator can override by updating rows)
+INSERT INTO offer_types (offer_type, inventory_url_template, availability_url_template, fulfillment_url_template, enabled)
+VALUES
+  (
+    'odoo',
+    'http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku}',
+    'http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/availability/{chain_id}/{seller}/{sku}',
+    'http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/fulfill/{chain_id}/{seller}',
+    true
+  ),
+  (
+    'codedispenser',
+    'http://market-adapter-codedispenser:{MARKET_CODE_DISPENSER_PORT}/inventory/{chain_id}/{seller}/{sku}',
+    NULL,
+    'http://market-adapter-codedispenser:{MARKET_CODE_DISPENSER_PORT}/fulfill/{chain_id}/{seller}',
+    true
+  )
+ON CONFLICT (offer_type) DO NOTHING;
 ";
 
             await cmd.ExecuteNonQueryAsync(ct);
@@ -73,7 +116,8 @@ CREATE INDEX IF NOT EXISTS ix_market_routes_enabled
         {
             await conn.OpenAsync(ct);
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"SELECT chain_id, seller_address, sku, inventory_url, availability_url, fulfillment_url, is_one_off, enabled
+            cmd.CommandText = @"
+SELECT chain_id, seller_address, sku, offer_type, is_one_off, enabled
 FROM market_service_routes
 WHERE enabled = true
   AND chain_id = $1
@@ -91,11 +135,9 @@ LIMIT 1";
                     ChainId: reader.GetInt64(0),
                     SellerAddress: reader.GetString(1),
                     Sku: reader.GetString(2),
-                    InventoryUrl: reader.IsDBNull(3) ? null : reader.GetString(3),
-                    AvailabilityUrl: reader.IsDBNull(4) ? null : reader.GetString(4),
-                    FulfillmentUrl: reader.IsDBNull(5) ? null : reader.GetString(5),
-                    IsOneOff: reader.GetBoolean(6),
-                    Enabled: reader.GetBoolean(7));
+                    OfferType: reader.IsDBNull(3) ? null : reader.GetString(3),
+                    IsOneOff: reader.GetBoolean(4),
+                    Enabled: reader.GetBoolean(5));
             }
         }
 
@@ -117,7 +159,77 @@ LIMIT 1";
         string skuNorm = sku.Trim().ToLowerInvariant();
 
         var cfg = await TryGetAsync(chainId, sellerNorm, skuNorm, ct);
-        return cfg is not null && cfg.IsConfigured;
+        if (cfg is null)
+        {
+            return false;
+        }
+
+        if (!cfg.Enabled)
+        {
+            return false;
+        }
+
+        if (cfg.IsOneOff)
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(cfg.OfferType))
+        {
+            return false;
+        }
+
+        var ot = await TryGetOfferTypeAsync(cfg.OfferType, ct);
+        return ot is not null && ot.Enabled;
+    }
+
+    private sealed record OfferTypeRow(
+        string OfferType,
+        string? InventoryTemplate,
+        string? AvailabilityTemplate,
+        string? FulfillmentTemplate,
+        bool Enabled);
+
+    private async Task<OfferTypeRow?> TryGetOfferTypeAsync(string offerType, CancellationToken ct)
+    {
+        string key = $"ot:{offerType.Trim().ToLowerInvariant()}";
+        if (_cache.TryGetValue<OfferTypeRow?>(key, out var cached))
+        {
+            return cached;
+        }
+
+        OfferTypeRow? result = null;
+
+        await using (var conn = new NpgsqlConnection(_connString))
+        {
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT offer_type, inventory_url_template, availability_url_template, fulfillment_url_template, enabled
+FROM offer_types
+WHERE offer_type = $1
+LIMIT 1";
+            cmd.Parameters.AddWithValue(offerType.Trim().ToLowerInvariant());
+
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                result = new OfferTypeRow(
+                    OfferType: reader.GetString(0),
+                    InventoryTemplate: reader.IsDBNull(1) ? null : reader.GetString(1),
+                    AvailabilityTemplate: reader.IsDBNull(2) ? null : reader.GetString(2),
+                    FulfillmentTemplate: reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Enabled: reader.GetBoolean(4));
+            }
+        }
+
+        _cache.Set(key, result, new MemoryCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = result is null ? TimeSpan.FromSeconds(20) : TimeSpan.FromMinutes(10),
+            Size = 50
+        });
+
+        return result;
     }
 
     public async Task<string?> TryResolveUpstreamAsync(
@@ -139,12 +251,43 @@ LIMIT 1";
             return null;
         }
 
-        return serviceKind switch
+        // One-off items use internal one-off logic and do not have upstream adapter URLs.
+        if (cfg.IsOneOff)
         {
-            MarketServiceKind.Inventory => string.IsNullOrWhiteSpace(cfg.InventoryUrl) ? null : cfg.InventoryUrl,
-            MarketServiceKind.Availability => string.IsNullOrWhiteSpace(cfg.AvailabilityUrl) ? null : cfg.AvailabilityUrl,
-            MarketServiceKind.Fulfillment => string.IsNullOrWhiteSpace(cfg.FulfillmentUrl) ? null : cfg.FulfillmentUrl,
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(cfg.OfferType))
+        {
+            return null;
+        }
+
+        var ot = await TryGetOfferTypeAsync(cfg.OfferType, ct);
+        if (ot is null || !ot.Enabled)
+        {
+            return null;
+        }
+
+        string? template = serviceKind switch
+        {
+            MarketServiceKind.Inventory => ot.InventoryTemplate,
+            MarketServiceKind.Availability => ot.AvailabilityTemplate,
+            MarketServiceKind.Fulfillment => ot.FulfillmentTemplate,
             _ => null
         };
+
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return null;
+        }
+
+        if (!OfferTypeTemplateExpander.TryExpand(template, chainId, sellerNorm, skuNorm, out var expanded, out var err))
+        {
+            _log.LogWarning("Failed to expand offer type template for offerType={OfferType} kind={Kind}: {Error}",
+                cfg.OfferType, serviceKind, err);
+            return null;
+        }
+
+        return expanded;
     }
 }

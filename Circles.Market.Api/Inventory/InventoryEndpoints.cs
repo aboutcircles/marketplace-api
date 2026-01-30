@@ -62,9 +62,10 @@ public static class InventoryEndpoints
                     statusCode: StatusCodes.Status404NotFound);
             }
 
-            if (!string.IsNullOrWhiteSpace(cfg.AvailabilityUrl))
+            var availabilityUrl = await routes.TryResolveUpstreamAsync(chainId, seller, skuNorm, MarketServiceKind.Availability, ct);
+            if (!string.IsNullOrWhiteSpace(availabilityUrl))
             {
-                var avail = await FetchAvailabilityAsync(http, authProvider, cfg.AvailabilityUrl!, ct);
+                var avail = await FetchAvailabilityAsync(http, authProvider, availabilityUrl!, ct);
                 if (avail.IsError)
                 {
                     if (avail.Error == "Blocked private address")
@@ -87,9 +88,10 @@ public static class InventoryEndpoints
                 return Results.Json(avail.Value);
             }
 
-            if (!string.IsNullOrWhiteSpace(cfg.InventoryUrl))
+            var inventoryUrl = await routes.TryResolveUpstreamAsync(chainId, seller, skuNorm, MarketServiceKind.Inventory, ct);
+            if (!string.IsNullOrWhiteSpace(inventoryUrl))
             {
-                var inv = await FetchInventoryAsync(http, authProvider, cfg.InventoryUrl!, ct);
+                var inv = await FetchInventoryAsync(http, authProvider, inventoryUrl!, ct);
                 if (inv.IsError)
                 {
                     if (inv.Error == "Blocked private address")
@@ -161,7 +163,8 @@ public static class InventoryEndpoints
                     statusCode: StatusCodes.Status404NotFound);
             }
 
-            if (string.IsNullOrWhiteSpace(cfg.InventoryUrl))
+            var invUpstream = await routes.TryResolveUpstreamAsync(chainId, seller, skuNorm, MarketServiceKind.Inventory, ct);
+            if (string.IsNullOrWhiteSpace(invUpstream))
             {
                 if (cfg.IsOneOff)
                 {
@@ -179,7 +182,7 @@ public static class InventoryEndpoints
                     statusCode: StatusCodes.Status502BadGateway);
             }
 
-            var inv = await FetchInventoryAsync(http, authProvider, cfg.InventoryUrl!, ct);
+            var inv = await FetchInventoryAsync(http, authProvider, invUpstream!, ct);
             if (inv.IsError)
             {
                 if (inv.Error == "Blocked private address")
@@ -208,38 +211,6 @@ public static class InventoryEndpoints
             return Results.Problem(title: "Upstream I/O error", detail: ex.Message,
                 statusCode: StatusCodes.Status502BadGateway);
         }
-    }
-
-    // product resolution moved to IProductResolver service
-
-    private static (string? seller, long chainId) TryParseInventoryPath(Uri uri)
-    {
-        try
-        {
-            var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            // expect: (inventory|availability)/{chainId}/{seller}/{sku}
-            for (int i = 0; i + 3 < segments.Length; i++)
-            {
-                bool isInventory = string.Equals(segments[i], "inventory", StringComparison.OrdinalIgnoreCase);
-                bool isAvailability = string.Equals(segments[i], "availability", StringComparison.OrdinalIgnoreCase);
-                if (!isInventory && !isAvailability)
-                {
-                    continue;
-                }
-
-                bool chainOk = long.TryParse(segments[i + 1], out var chain);
-                bool sellerOk = segments[i + 2].StartsWith("0x", StringComparison.OrdinalIgnoreCase) && segments[i + 2].Length == 42;
-                if (chainOk && sellerOk)
-                {
-                    return (segments[i + 2].ToLowerInvariant(), chain);
-                }
-            }
-        }
-        catch
-        {
-        }
-
-        return (null, 0);
     }
 
     private static async Task<(bool IsError, string? Error, string? Value)> FetchAvailabilityAsync(
@@ -398,5 +369,35 @@ public static class InventoryEndpoints
                 return (true, $"Invalid QuantitativeValue: {ex.Message}", default!);
             }
         }
+    }
+
+    private static (string? seller, long chainId) TryParseInventoryPath(Uri uri)
+    {
+        try
+        {
+            var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            // expect: (inventory|availability)/{chainId}/{seller}/{sku}
+            for (int i = 0; i + 3 < segments.Length; i++)
+            {
+                bool isInventory = string.Equals(segments[i], "inventory", StringComparison.OrdinalIgnoreCase);
+                bool isAvailability = string.Equals(segments[i], "availability", StringComparison.OrdinalIgnoreCase);
+                if (!isInventory && !isAvailability)
+                {
+                    continue;
+                }
+
+                bool chainOk = long.TryParse(segments[i + 1], out var chain);
+                bool sellerOk = segments[i + 2].StartsWith("0x", StringComparison.OrdinalIgnoreCase) && segments[i + 2].Length == 42;
+                if (chainOk && sellerOk)
+                {
+                    return (segments[i + 2].ToLowerInvariant(), chain);
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return (null, 0);
     }
 }

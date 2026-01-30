@@ -9,10 +9,36 @@ To bring a seller's products live on the marketplace, you must understand these 
 *   **seller**: The Circles address (avatar) that owns the products.
 *   **sku**: A unique string identifier for a product (e.g., `voucher-10-crc`).
 *   **chainId**: The blockchain network ID (e.g., `100` for Gnosis Chain).
+*   **offer_type**: Selects which adapter handles inventory/availability/fulfillment for this SKU. Valid values:
+    *   `odoo`: Use Odoo ERP adapter (supports inventory, availability, and fulfillment)
+    *   `codedispenser`: Use CodeDispenser adapter (supports inventory and fulfillment only)
+*   **is_one_off**: If `true`, this is a one-time sale (e.g., unique item) with no upstream adapter URL.
 *   **inventoryFeed vs availabilityFeed**:
     *   `inventoryFeed`: Provides a quantitative stock level (e.g., "5 items left").
     *   `availabilityFeed`: Provides a simple "InStock" / "OutOfStock" status.
 *   **fulfillmentEndpoint**: The URL called by the Market API after a payment is finalized to actually deliver the goods.
+
+### Configuration via `market_service_routes`
+
+Routes are configured in the `circles_market_api` database, table `market_service_routes`:
+
+```sql
+INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, enabled)
+VALUES (100, '0xseller...', 'my-sku', 'codedispenser', false, true);
+```
+
+The actual adapter URLs are derived from templates in `offer_types` table at runtime:
+
+| offer_type | inventory template | availability template | fulfillment template |
+|------------|-------------------|----------------------|---------------------|
+| odoo | http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku} | http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/availability/{chain_id}/{seller}/{sku} | http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/fulfill/{chain_id}/{seller} |
+| codedispenser | http://market-adapter-codedispenser:{MARKET_CODE_DISPENSER_PORT}/inventory/{chain_id}/{seller}/{sku} | (none) | http://market-adapter-codedispenser:{MARKET_CODE_DISPENSER_PORT}/fulfill/{chain_id}/{seller} |
+
+Template variables are expanded case-insensitively:
+*   `{seller}` - lowercase seller address
+*   `{sku}` - lowercase SKU
+*   `{chain_id}` - numeric chain ID
+*   Environment ports: `{MARKET_API_PORT}`, `{MARKET_ODOO_ADAPTER_PORT}`, `{MARKET_CODE_DISPENSER_PORT}`
 *   **"Internal URLs are fine"**: Since the Market API and Adapters run in the same Docker network, they should use service names for communication (e.g., `http://market-adapter-codedispenser:5680`).
 *   **Inbound vs Outbound auth**:
     *   **Inbound (Adapter side)**: Adapters check the `X-Circles-Service-Key` header against their `trusted_callers` table.

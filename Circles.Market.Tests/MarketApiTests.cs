@@ -24,12 +24,10 @@ internal class AlwaysConfiguredRouteStore : IMarketRouteStore
 
     public Task<MarketRouteConfig?> TryGetAsync(long chainId, string sellerAddress, string sku, CancellationToken ct = default)
         => Task.FromResult<MarketRouteConfig?>(new MarketRouteConfig(
-            chainId,
-            sellerAddress.Trim().ToLowerInvariant(),
-            sku.Trim().ToLowerInvariant(),
-            InventoryUrl: "http://example/inventory",
-            AvailabilityUrl: null,
-            FulfillmentUrl: null,
+            ChainId: chainId,
+            SellerAddress: sellerAddress.Trim().ToLowerInvariant(),
+            Sku: sku.Trim().ToLowerInvariant(),
+            OfferType: "odoo",
             IsOneOff: false,
             Enabled: true));
 }

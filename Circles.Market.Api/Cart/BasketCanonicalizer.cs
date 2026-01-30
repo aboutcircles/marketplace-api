@@ -139,10 +139,16 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
             }
 
             // Inventory enforcement
-            var key = (seller, product.Sku);
+            var skuKey = product.Sku.Trim().ToLowerInvariant();
+            var key = (seller, skuKey);
             perProduct.TryGetValue(key, out var state);
 
-            var invFeed = cfg.InventoryUrl;
+            var invFeed = await _routes.TryResolveUpstreamAsync(
+                basket.ChainId,
+                seller,
+                skuCfg,
+                MarketServiceKind.Inventory,
+                ct);
             long qty = line.OrderQuantity <= 0 ? 1 : line.OrderQuantity;
             // Normalize quantity defensively so downstream totals and snapshots never see <= 0
             line.OrderQuantity = (int)qty;

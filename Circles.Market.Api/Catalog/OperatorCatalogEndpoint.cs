@@ -245,9 +245,19 @@ public static class OperatorCatalogEndpoint
 
             var cfg = await routes.TryGetAsync(chain, sellerAddr, sku, ct);
 
-            bool hasInventoryRoute = cfg is not null && !string.IsNullOrWhiteSpace(cfg.InventoryUrl);
-            bool hasAvailabilityRoute = cfg is not null && !string.IsNullOrWhiteSpace(cfg.AvailabilityUrl);
             bool isOneOff = cfg is not null && cfg.IsOneOff;
+
+            string? invUpstream = null;
+            string? availUpstream = null;
+
+            if (cfg is not null && cfg.IsConfigured && !cfg.IsOneOff)
+            {
+                invUpstream = await routes.TryResolveUpstreamAsync(chain, sellerAddr, sku, MarketServiceKind.Inventory, ct);
+                availUpstream = await routes.TryResolveUpstreamAsync(chain, sellerAddr, sku, MarketServiceKind.Availability, ct);
+            }
+
+            bool hasInventoryRoute = !string.IsNullOrWhiteSpace(invUpstream);
+            bool hasAvailabilityRoute = !string.IsNullOrWhiteSpace(availUpstream);
 
             bool emitAvailability = hasInventoryRoute || hasAvailabilityRoute || isOneOff;
             bool emitInventory = hasInventoryRoute;
