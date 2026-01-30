@@ -102,6 +102,7 @@ services:
 
   postgres:
     image: postgres:17-alpine
+    user: "10000:10000"  # Match circles-node UID/GID for volume permissions
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
