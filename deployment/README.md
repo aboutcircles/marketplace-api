@@ -33,6 +33,13 @@ The following variables are used solely by the market api. They configure profil
 * `MARKET_JWT_SECRET`: The JWT secret for signing and verifying tokens.
 * `DB_MARKET_API_PASSWORD`: The password for the market-api db user.
 
+Outbound adapter auth (env-based shared secrets):
+* `MARKET_ODOO_ADAPTER_TOKEN`: Shared secret for outbound calls to the Odoo adapter.
+* `MARKET_CODE_DISPENSER_TOKEN`: Shared secret for outbound calls to the CodeDispenser adapter.
+* `MARKET_OUTBOUND_HEADER_NAME`: (Optional) Header name to send, defaults to `X-Circles-Service-Key`.
+* `MARKET_ODOO_ADAPTER_ORIGIN`: (Optional) Override the Odoo adapter origin.
+* `MARKET_CODE_DISPENSER_ORIGIN`: (Optional) Override the CodeDispenser adapter origin.
+
 ##### 1.2.3 Code Dispenser configuration
 * `CODE_DISPENSER_TAG`: The image tag for the code dispenser container (e.g., `latest`).
 * `CODE_DISPENSER_JWT_SECRET`: The secret for signing and verifying tokens for the code dispenser.

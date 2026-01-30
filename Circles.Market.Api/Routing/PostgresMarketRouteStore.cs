@@ -27,42 +27,32 @@ public sealed class PostgresMarketRouteStore : IMarketRouteStore
 
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
+-- Offer types: templates for upstream adapters
 CREATE TABLE IF NOT EXISTS offer_types (
   offer_type                text    NOT NULL PRIMARY KEY,
   inventory_url_template     text    NULL,
   availability_url_template  text    NULL,
   fulfillment_url_template   text    NULL,
-  enabled                   boolean NOT NULL DEFAULT true,
-  created_at                timestamptz NOT NULL DEFAULT now(),
-  updated_at                timestamptz NOT NULL DEFAULT now()
+  enabled                   boolean NOT NULL DEFAULT true
 );
 
 CREATE INDEX IF NOT EXISTS ix_offer_types_enabled
   ON offer_types(enabled, offer_type);
 
+-- Routes: configured SKUs
 CREATE TABLE IF NOT EXISTS market_service_routes (
   chain_id         bigint  NOT NULL,
   seller_address   text    NOT NULL,
   sku              text    NOT NULL,
-
-  -- Deprecated: per-row URLs (kept for backward compatibility; no longer read)
-  inventory_url    text    NULL,
-  availability_url text    NULL,
-  fulfillment_url  text    NULL,
-
-  -- New: adapter family selector
   offer_type       text    NULL,
-
   is_one_off       boolean NOT NULL DEFAULT false,
   enabled          boolean NOT NULL DEFAULT true,
-  created_at       timestamptz NOT NULL DEFAULT now(),
-  updated_at       timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (chain_id, seller_address, sku)
+  PRIMARY KEY (chain_id, seller_address, sku),
+  CONSTRAINT ck_market_service_routes_offer_type_or_one_off
+    CHECK (is_one_off OR offer_type IS NOT NULL),
+  CONSTRAINT fk_market_service_routes_offer_type
+    FOREIGN KEY (offer_type) REFERENCES offer_types(offer_type)
 );
-
--- Ensure offer_type exists even if table was created before this change
-ALTER TABLE market_service_routes
-  ADD COLUMN IF NOT EXISTS offer_type text NULL;
 
 CREATE INDEX IF NOT EXISTS ix_market_routes_enabled
   ON market_service_routes(enabled, chain_id, seller_address, sku);

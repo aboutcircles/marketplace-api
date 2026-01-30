@@ -1,7 +1,7 @@
 # Odoo – API README
 
 > **Note:** These env vars are for running the curl examples against Odoo directly.
-> The Odoo adapter itself is configured via its database tables (`odoo_connections`, `inventory_mappings`) using scripts in `Circles.Market/scripts/`.
+> The Odoo adapter itself is configured via its database tables (`odoo_connections`, `inventory_mappings`) using scripts in `scripts/`.
 
 > **Base host:** `https://your.odoo.com`
 > **Endpoints used:**

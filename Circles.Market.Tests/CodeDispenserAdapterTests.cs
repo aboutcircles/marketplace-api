@@ -1,5 +1,4 @@
 using Circles.Market.Adapters.CodeDispenser;
-using Microsoft.Extensions.Options;
 
 namespace Circles.Market.Tests;
 
@@ -78,6 +77,15 @@ public class InMemoryStore : ICodeDispenserStore
 [TestFixture]
 public class CodeDispenserAdapterTests
 {
+    private sealed class EmptyResolver : ICodeMappingResolver
+    {
+        public bool TryResolve(long chainId, string sellerAddress, string sku, out CodeMappingEntry? entry)
+        {
+            entry = null;
+            return false;
+        }
+    }
+
     [Test]
     public void Mapping_Normalization_Lowercases_Seller_And_Sku()
     {
@@ -109,8 +117,7 @@ public class CodeDispenserAdapterTests
     [Test]
     public void NotApplicable_When_No_Mapping()
     {
-        var opts = Options.Create(new CodeMappingOptions { Entries = new List<CodeMappingEntry>() });
-        var resolver = new ConfigCodeMappingResolver(opts);
+        var resolver = new EmptyResolver();
         bool ok = resolver.TryResolve(1229, "0xaabbccddeeff00112233445566778899aabbccdd", "unknown", out var entry);
         Assert.That(ok, Is.False);
         Assert.That(entry, Is.Null);

@@ -20,7 +20,8 @@ builder.Services.AddSingleton<OdooDbBootstrapper>(sp =>
     new OdooDbBootstrapper(connString, sp.GetRequiredService<ILogger<OdooDbBootstrapper>>()));
 
 // DB-backed components
-builder.Services.AddSingleton<ITrustedCallerAuth>(sp => new PostgresTrustedCallerAuth(connString, sp.GetRequiredService<ILogger<PostgresTrustedCallerAuth>>()));
+builder.Services.AddSingleton<ITrustedCallerAuth>(sp =>
+    new EnvTrustedCallerAuth(sp.GetRequiredService<ILogger<EnvTrustedCallerAuth>>()));
 builder.Services.AddSingleton<IInventoryMappingResolver>(sp => new PostgresInventoryMappingResolver(connString, sp.GetRequiredService<ILogger<PostgresInventoryMappingResolver>>()));
 builder.Services.AddSingleton<IOdooConnectionResolver>(sp => new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
 

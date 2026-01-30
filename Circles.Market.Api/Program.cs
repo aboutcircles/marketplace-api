@@ -128,17 +128,9 @@ builder.Services.AddHttpClient("inventory_trusted", client =>
     client.DefaultRequestHeaders.Clear();
 }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 
-builder.Services.AddHttpClient("fulfillment", client =>
-{
-    client.DefaultRequestHeaders.Clear();
-});
-builder.Services.AddHttpClient("inventory", client =>
-{
-    client.DefaultRequestHeaders.Clear();
-});
 
 builder.Services.AddSingleton<IOutboundServiceAuthProvider>(sp =>
-    new PostgresOutboundServiceAuthProvider(pgConn!, sp.GetRequiredService<ILogger<PostgresOutboundServiceAuthProvider>>(), sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>()));
+    new EnvOutboundServiceAuthProvider(sp.GetRequiredService<ILogger<EnvOutboundServiceAuthProvider>>()));
 
 builder.Services.AddSingleton<IMarketRouteStore>(sp =>
     new PostgresMarketRouteStore(
@@ -160,8 +152,6 @@ builder.Services.AddSingleton<ICartValidator, CartValidator>();
 builder.Services.AddSingleton<IProductResolver, ProductResolver>();
 builder.Services.AddSingleton<IBasketCanonicalizer, BasketCanonicalizer>();
 
-builder.Services.AddTransient<Circles.Market.Api.Outbound.LoggingHandler>(sp =>
-    new Circles.Market.Api.Outbound.LoggingHandler(sp.GetRequiredService<ILogger<Circles.Market.Api.Outbound.LoggingHandler>>()));
 
 // Live inventory client for enforcing inventory limits in basket canonicalization
 builder.Services.AddSingleton<ILiveInventoryClient, LiveInventoryClient>();
@@ -269,14 +259,9 @@ app.Logger.LogInformation("[startup-config] {Key}={Value}", "ASPNETCORE_URLS",
 app.Logger.LogInformation("[startup-config] {Key}={Value}", "PORT",
     Environment.GetEnvironmentVariable("PORT") ?? "[unset]");
 
-// Ensure outbound credentials schema + market routes schema
+// Ensure market routes schema
 using (var scope = app.Services.CreateScope())
 {
-    if (scope.ServiceProvider.GetRequiredService<IOutboundServiceAuthProvider>() is PostgresOutboundServiceAuthProvider provider)
-    {
-        await provider.EnsureSchemaAsync(CancellationToken.None);
-    }
-
     var routeStore = scope.ServiceProvider.GetRequiredService<IMarketRouteStore>();
     await routeStore.EnsureSchemaAsync(CancellationToken.None);
 }

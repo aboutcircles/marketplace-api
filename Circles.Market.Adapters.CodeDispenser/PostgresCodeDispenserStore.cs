@@ -75,19 +75,6 @@ CREATE TABLE IF NOT EXISTS code_assignments (
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_code_assignments_pool_code ON code_assignments(pool_id, code);
 
-CREATE TABLE IF NOT EXISTS trusted_callers (
-  caller_id text PRIMARY KEY,
-  api_key_sha256 bytea NOT NULL UNIQUE,
-  scopes text[] NOT NULL,
-  seller_address text NULL,
-  chain_id bigint NULL,
-  enabled boolean NOT NULL DEFAULT true,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  revoked_at timestamptz NULL
-);
-
-CREATE INDEX IF NOT EXISTS ix_trusted_callers_enabled ON trusted_callers(enabled);
-
 -- New: mapping table for seller+sku -> pool
 CREATE TABLE IF NOT EXISTS code_mappings (
   chain_id              bigint NOT NULL,

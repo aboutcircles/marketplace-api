@@ -23,21 +23,7 @@ public sealed class OdooDbBootstrapper
             _log.LogInformation("Postgres connection opened for Odoo schema creation.");
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
--- 1. trusted_callers (inbound auth)
-CREATE TABLE IF NOT EXISTS trusted_callers (
-  caller_id text PRIMARY KEY,
-  api_key_sha256 bytea NOT NULL UNIQUE,
-  scopes text[] NOT NULL,
-  seller_address text NULL,
-  chain_id bigint NULL,
-  enabled boolean NOT NULL DEFAULT true,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  revoked_at timestamptz NULL
-);
-
-CREATE INDEX IF NOT EXISTS ix_trusted_callers_enabled ON trusted_callers(enabled);
-
--- 2. inventory_mappings (SKU mapping)
+-- 1. inventory_mappings (SKU mapping)
 CREATE TABLE IF NOT EXISTS inventory_mappings (
   seller_address     text NOT NULL,
   chain_id           bigint NOT NULL,
@@ -51,7 +37,7 @@ CREATE TABLE IF NOT EXISTS inventory_mappings (
 
 CREATE INDEX IF NOT EXISTS ix_inventory_mappings_lookup ON inventory_mappings(seller_address, chain_id, sku) WHERE (enabled = true AND revoked_at IS NULL);
 
--- 3. odoo_connections (Odoo connection)
+-- 2. odoo_connections (Odoo connection)
 CREATE TABLE IF NOT EXISTS odoo_connections (
   seller_address text NOT NULL,
   chain_id       bigint NOT NULL,
@@ -68,7 +54,7 @@ CREATE TABLE IF NOT EXISTS odoo_connections (
   PRIMARY KEY (seller_address, chain_id)
 );
 
--- 4. fulfillment_runs (idempotency tracking)
+-- 3. fulfillment_runs (idempotency tracking)
 CREATE TABLE IF NOT EXISTS fulfillment_runs (
   chain_id          bigint NOT NULL,
   seller_address    text NOT NULL,

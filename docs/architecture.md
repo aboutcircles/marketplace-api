@@ -56,7 +56,7 @@ To keep the system maintainable and decouple services, we follow these ownership
 | If you want to change... | Go to... |
 | :--- | :--- |
 | JWT validation domains | `.env` (`MARKET_AUTH_ALLOWED_DOMAINS`) |
-| Market -> Adapter auth | `scripts/ops.sh auth-codedisp` or `auth-odoo` |
+| Market -> Adapter auth | `CIRCLES_SERVICE_KEY` shared secret (env) |
 | Seller Odoo credentials | `scripts/ops.sh odoo-connection` |
 | SKU to Odoo product mapping | `scripts/ops.sh odoo-mapping` |
 | SKU to Code pool mapping | `scripts/ops.sh mapping-codedisp` |

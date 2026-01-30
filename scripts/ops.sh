@@ -5,10 +5,8 @@ source "$(dirname "$0")/_lib.sh"
 USAGE="<command> [args...]
 
 Commands:
-  auth-codedisp       Wire Market API -> CodeDispenser auth
   mapping-codedisp    Create CodeDispenser mapping
   seed-pool           Seed CodeDispenser code pool
-  auth-odoo           Wire Market API -> Odoo auth
   odoo-connection     Configure Odoo connection
   odoo-mapping        Configure Odoo inventory mapping
   psql <db>           Open PSQL shell (market|codedisp|odoo)
@@ -17,7 +15,7 @@ Commands:
   doctor              Check system health and prerequisites
 
 Example:
-  $0 auth-codedisp market-api-compose my-secret"
+  $0 mapping-codedisp 100 0xabc... tee-black poolA"
 
 if help_requested "$@"; then
     print_usage "$(basename "$0")" "$USAGE" 0
@@ -41,8 +39,6 @@ show_status() {
 
     if docker compose ps postgres | grep -q "Up"; then
         echo "--- Database Summary ---"
-        echo "Market Outbound Creds: $(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$DB_MARKET" -t -c "SELECT count(*) FROM outbound_service_credentials;" | xargs)"
-        echo "CodeDispenser Callers: $(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$DB_CODEDISP" -t -c "SELECT count(*) FROM trusted_callers;" | xargs)"
         echo "CodeDispenser Mappings: $(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$DB_CODEDISP" -t -c "SELECT count(*) FROM code_mappings;" | xargs)"
         echo "Odoo Connections: $(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$DB_ODOO" -t -c "SELECT count(*) FROM odoo_connections;" | xargs)"
         echo "Odoo Mappings: $(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$DB_ODOO" -t -c "SELECT count(*) FROM inventory_mappings;" | xargs)"
@@ -88,10 +84,8 @@ CMD="$1"
 shift
 
 case "$CMD" in
-    auth-codedisp)    "$(dirname "$0")/setup-market-codedisp-auth.sh" "$@" ;;
     mapping-codedisp) "$(dirname "$0")/set-codedisp-mapping.sh" "$@" ;;
     seed-pool)        "$(dirname "$0")/seed-code-pool.sh" "$@" ;;
-    auth-odoo)        "$(dirname "$0")/setup-market-odoo-auth.sh" "$@" ;;
     odoo-connection)  "$(dirname "$0")/set-odoo-connection.sh" "$@" ;;
     odoo-mapping)     "$(dirname "$0")/set-odoo-inventory-mapping.sh" "$@" ;;
     psql)             "$(dirname "$0")/psql.sh" "$@" ;;

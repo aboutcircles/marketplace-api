@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using Circles.Market.Adapters.CodeDispenser;
-using Microsoft.Extensions.Options;
 using Npgsql;
 using Circles.Market.Shared;
 
@@ -30,9 +29,8 @@ builder.Services.AddSingleton<ICodeDispenserStore>(sp =>
 });
 
 builder.Services.AddSingleton<Circles.Market.Adapters.CodeDispenser.Auth.ITrustedCallerAuth>(sp =>
-{
-    return new Circles.Market.Adapters.CodeDispenser.Auth.PostgresTrustedCallerAuth(postgresConn, sp.GetRequiredService<ILogger<Circles.Market.Adapters.CodeDispenser.Auth.PostgresTrustedCallerAuth>>());
-});
+    new Circles.Market.Adapters.CodeDispenser.Auth.EnvTrustedCallerAuth(
+        sp.GetRequiredService<ILogger<Circles.Market.Adapters.CodeDispenser.Auth.EnvTrustedCallerAuth>>()));
 
 builder.Services.AddLogging(o => o.AddConsole());
 

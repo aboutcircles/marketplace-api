@@ -41,8 +41,8 @@ Template variables are expanded case-insensitively:
 *   Environment ports: `{MARKET_API_PORT}`, `{MARKET_ODOO_ADAPTER_PORT}`, `{MARKET_CODE_DISPENSER_PORT}`
 *   **"Internal URLs are fine"**: Since the Market API and Adapters run in the same Docker network, they should use service names for communication (e.g., `http://market-adapter-codedispenser:5680`).
 *   **Inbound vs Outbound auth**:
-    *   **Inbound (Adapter side)**: Adapters check the `X-Circles-Service-Key` header against their `trusted_callers` table.
-    *   **Outbound (Market API side)**: Market API only attaches the `X-Circles-Service-Key` if a matching row exists in its `outbound_service_credentials` table. The match **must include the origin and port**.
+    *   **Inbound (Adapter side)**: Adapters compare the `X-Circles-Service-Key` header against the shared secret in `CIRCLES_SERVICE_KEY`.
+    *   **Outbound (Market API side)**: Market API attaches the `X-Circles-Service-Key` header using `CIRCLES_SERVICE_KEY` (with optional per-adapter overrides).
 
 ## Flow: Bring a CodeDispenser voucher offer live
 
@@ -70,114 +70,17 @@ The adapter needs to know which pool to pull from when the Market API asks for a
 *   **What to check**: `SELECT * FROM code_mappings WHERE sku = 'your_sku';`
 
 ### 4. Configure auth
-The adapter will reject calls without a key, and Market API won't send a key unless told to.
+Adapters reject calls without a key. All internal service-to-service calls require header `X-Circles-Service-Key` with a shared secret.
 
-#### 4.0 Generate a caller-id and shared secret (copy/paste)
+#### 4.0 Set a shared secret
 
-You need two values:
-
-* **caller_id**: a human-readable identifier for *who* is calling the adapter (usually “market-api in env X”).
-  It’s used as the stable key in the adapter’s `trusted_callers` table. Pick something you can recognize later during debugging/rotation.
-* **shared_secret**: the actual secret string. Market API sends it in `X-Circles-Service-Key`, and the adapter validates it by comparing a **SHA256 hash** stored in `trusted_callers`.
-
-**Recommended constraints**
-
-* `caller_id`: ASCII, no spaces, keep it stable (or include a timestamp if you want “rotation by new caller”).
-  Good charset: `[a-z0-9-]`.
-* `shared_secret`: generate as hex so it’s safe in shells, headers, and SQL (`openssl rand -hex 32`).
-
-#### Option A: stable caller-id (recommended) + strong secret
+Set the same value for Market API, CodeDispenser, and Odoo:
 
 ```bash
-ENVIRONMENT="${ENVIRONMENT:-local}"
-
-CALLER_ID="market-api-${ENVIRONMENT}"
-SHARED_SECRET="$(openssl rand -hex 32)"
-
-echo "CALLER_ID=$CALLER_ID"
-echo "SHARED_SECRET=$SHARED_SECRET"
+export CIRCLES_SERVICE_KEY="$(openssl rand -hex 32)"
 ```
 
-Then run:
-
-```bash
-./scripts/ops.sh auth-codedisp "$CALLER_ID" "$SHARED_SECRET"
-```
-
-This pattern makes key rotation straightforward: keep the same `CALLER_ID` and just write a new secret.
-
-#### Option B: unique caller-id per rotation (if you prefer audit-friendly history)
-
-```bash
-ENVIRONMENT="${ENVIRONMENT:-local}"
-
-CALLER_ID="market-api-${ENVIRONMENT}-$(date -u +%Y%m%dT%H%M%SZ)"
-SHARED_SECRET="$(openssl rand -hex 32)"
-
-echo "CALLER_ID=$CALLER_ID"
-echo "SHARED_SECRET=$SHARED_SECRET"
-```
-
-Run the same `auth-codedisp` command as above.
-
-#### Don’t lose the secret
-
-* The **adapter DB only stores the SHA256 hash**, so you can’t recover the secret from the DB later.
-* Store `SHARED_SECRET` in your secret manager (1Password, Vault, Kubernetes secret, etc.). Never commit it.
-
-#### 4.1 Verify auth rows exist and match what you generated
-
-Compute the SHA256 hash you *expect* the adapter to have stored:
-
-```bash
-EXPECTED_HASH="$(printf %s "$SHARED_SECRET" | sha256sum | awk '{print $1}')"
-echo "$EXPECTED_HASH"
-```
-
-Now check the adapter DB:
-
-**CodeDispenser**
-
-```bash
-./scripts/ops.sh psql codedisp
-```
-
-```sql
-SELECT caller_id, api_key_sha256
-FROM trusted_callers
-WHERE caller_id = 'market-api-local';
-```
-
-**Odoo**
-
-```bash
-./scripts/ops.sh psql odoo
-```
-
-```sql
-SELECT caller_id, api_key_sha256
-FROM trusted_callers
-WHERE caller_id = 'market-api-local';
-```
-
-You want `api_key_sha256` (rendered as hex) to equal `$EXPECTED_HASH`.
-
-Finally check Market API side (outbound creds):
-
-```bash
-./scripts/ops.sh psql market
-```
-
-```sql
-SELECT endpoint_origin, path_prefix, service_key
-FROM outbound_service_credentials
-WHERE endpoint_origin IN (
-  'http://market-adapter-codedispenser:5680',
-  'http://market-adapter-odoo:5678'
-);
-```
-
-You want to see the `service_key` present and the **origin includes the port**.
+Store the value in your secret manager (Vault, 1Password, Kubernetes secret, etc.). Do not commit it.
 
 ### 5. Set offer URLs
 In the seller's catalog (on IPFS), the `inventoryFeed` and `fulfillmentEndpoint` must point to the CodeDispenser adapter.
@@ -214,14 +117,7 @@ Map your marketplace SKU to an internal Odoo Product Code.
 *   **What to check**: `SELECT * FROM inventory_mappings WHERE sku = '...';`
 
 ### 3. Configure auth
-Same concept as CodeDispenser: both sides must know the shared secret. Use the variables from section **4.0** above.
-
-**Command:**
-```bash
-./scripts/ops.sh auth-odoo "$CALLER_ID" "$SHARED_SECRET"
-```
-*   **What it does**: Updates `trusted_callers` (Odoo DB) and `outbound_service_credentials` (Market DB).
-*   **What to check**: Use the verification steps in section **4.1** above. Default `odoo_origin` is `http://market-adapter-odoo:5678`.
+Use the shared `CIRCLES_SERVICE_KEY` from section **4.0** above. The Odoo adapter reads the same env var at startup.
 
 ### 4. Set offer URLs
 Point the seller's offer URLs to the Odoo adapter:
@@ -233,27 +129,38 @@ Verify the paths via curl on the host ports (`5678`) or inside the network.
 
 ## Flow: Rotate a service key safely
 
-Key rotation is two-sided. To avoid downtime:
-1.  Add a **new** row to the adapter's `trusted_callers` with the new secret.
-2.  Update the Market API's `outbound_service_credentials` to the new secret.
-3.  Verify calls still work.
-4.  Remove the old `trusted_callers` row.
-
-**Warning**: `outbound_service_credentials` matching is sensitive to the **origin including port**. If you change the internal port of an adapter, you must update this table.
+Key rotation is a simple env change:
+1. Update `CIRCLES_SERVICE_KEY` in Market API + adapters.
+2. Deploy/restart the services.
 
 ## Debugging (symptoms → cause → fix)
 
 ### 401 Unauthorized from adapter
-*   **Cause**: `trusted_callers` missing, wrong secret, or wrong scope.
-*   **Fix**: Re-run `auth-codedisp` or `auth-odoo`. Verify the `X-Circles-Service-Key` is being sent.
+*   **Cause**: missing or wrong `CIRCLES_SERVICE_KEY`.
+*   **Fix**: ensure `CIRCLES_SERVICE_KEY` is set and the `X-Circles-Service-Key` header is being sent.
 
 ### "Blocked private address" / Market refusing outbound
-*   **Cause**: Market API refuses to call internal IPs unless it has an explicit `outbound_service_credentials` match for that origin.
-*   **Fix**: Check `outbound_service_credentials`. The `endpoint_origin` must exactly match the start of the URL (e.g. `http://market-adapter-codedispenser:5680`).
+*   **Cause**: Market API refuses to call internal IPs unless it has an explicit env token configured for that origin.
+*   **Fix**: Ensure the correct `MARKET_*_TOKEN` env var is set and the origin/port matches the adapter endpoint.
 
 ### 404 Not Found from Odoo adapter
 *   **Cause**: Missing row in `inventory_mappings` or `odoo_connections`.
 *   **Fix**: Re-run `odoo-mapping` or `odoo-connection`.
+
+## Outbound adapter auth (env-based)
+
+Market API uses env vars for outbound shared secrets:
+
+* `CIRCLES_SERVICE_KEY` (shared secret for all adapters)
+* Optional per-adapter overrides:
+  * `MARKET_ODOO_ADAPTER_TOKEN`
+  * `MARKET_CODE_DISPENSER_TOKEN`
+* Optional `MARKET_OUTBOUND_HEADER_NAME` (default `X-Circles-Service-Key`)
+* Optional origin overrides:
+  * `MARKET_ODOO_ADAPTER_ORIGIN` (default `http://market-adapter-odoo:${MARKET_ODOO_ADAPTER_PORT}`)
+  * `MARKET_CODE_DISPENSER_ORIGIN` (default `http://market-adapter-codedispenser:${MARKET_CODE_DISPENSER_PORT}`)
+
+Warning: If a token env var is missing, Market API will attempt an unauthenticated request; private/local outbound guards may block it.
 
 ## Runtime configuration knobs (high impact)
 
@@ -295,18 +202,16 @@ Each service owns its own schema within the PostgreSQL instance:
 
 | Service | Database Name | Purpose | Key Tables |
 | :--- | :--- | :--- | :--- |
-| **Market API** | `circles_market_api` | Core market data, offers, and credentials for adapters. | `outbound_service_credentials` |
-| **CodeDispenser** | `circles_codedisp` | Management of digital code pools and mappings. | `trusted_callers`, `code_mappings`, `code_pools`, `code_pool_codes` |
-| **Odoo Adapter** | `circles_odoo` | Connection details and inventory mapping for Odoo ERP. | `trusted_callers`, `odoo_connections`, `inventory_mappings` |
+| **Market API** | `circles_market_api` | Core market data and offers. | `market_service_routes` |
+| **CodeDispenser** | `circles_codedisp` | Management of digital code pools and mappings. | `code_mappings`, `code_pools`, `code_pool_codes` |
+| **Odoo Adapter** | `circles_odoo` | Connection details and inventory mapping for Odoo ERP. | `odoo_connections`, `inventory_mappings` |
 
 ## Appendix: scripts/ops.sh command reference
 
 | Command | Description |
 | :--- | :--- |
-| `auth-codedisp` | Wire Market API -> CodeDispenser auth |
 | `mapping-codedisp` | Create CodeDispenser mapping |
 | `seed-pool` | Seed CodeDispenser code pool |
-| `auth-odoo` | Wire Market API -> Odoo auth |
 | `odoo-connection` | Configure Odoo connection |
 | `odoo-mapping` | Configure Odoo inventory mapping |
 | `psql <db>` | Open PSQL shell (market|codedisp|odoo) |
