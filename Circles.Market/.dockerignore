@@ -1,0 +1,32 @@
+# State and data directories
+.state/
+*.state/
+
+# Build artifacts
+**/bin/
+**/obj/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vs/
+*.user
+
+# Documentation
+*.md
+!README.md
+
+# Test projects
+**/*.Tests/
+
+# Resources and scripts not needed in container
+_resources/
+scripts/
