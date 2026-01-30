@@ -1,8 +1,6 @@
 using System.Text.Json;
-using Circles.Profiles.Interfaces;
-using Circles.Profiles.Models.Core;
+using Circles.Market.Api.Routing;
 using Circles.Profiles.Models.Market;
-using Circles.Profiles.Sdk;
 using Circles.Market.Api.Outbound;
 
 namespace Circles.Market.Api.Inventory;
@@ -39,7 +37,7 @@ public static class InventoryEndpoints
         long chainId,
         string seller,
         string sku,
-        IProductResolver resolver,
+        IMarketRouteStore routes,
         IHttpClientFactory http,
         Auth.IOutboundServiceAuthProvider authProvider,
         IOneOffSalesStore oneOffStore,
@@ -54,26 +52,19 @@ public static class InventoryEndpoints
 
         try
         {
-            // Validate and normalize seller address to prevent downstream exceptions
             seller = Utils.NormalizeAddr(seller);
-            var (product, _) = await resolver.ResolveProductAsync(chainId, seller, sku, ct);
-            if (product is null)
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            var cfg = await routes.TryGetAsync(chainId, seller, skuNorm, ct);
+            if (cfg is null || !cfg.IsConfigured)
             {
-                return Results.Problem(title: "Not found", detail: "Product not found",
+                return Results.Problem(title: "Not found", detail: "Product not configured",
                     statusCode: StatusCodes.Status404NotFound);
             }
 
-            var offer = product.Offers.FirstOrDefault();
-            if (offer is null)
+            if (!string.IsNullOrWhiteSpace(cfg.AvailabilityUrl))
             {
-                return Results.Problem(title: "Data error", detail: "Product has no offers",
-                    statusCode: StatusCodes.Status502BadGateway);
-            }
-
-            // Prefer availabilityFeed if present
-            if (!string.IsNullOrWhiteSpace(offer.CirclesAvailabilityFeed))
-            {
-                var avail = await FetchAvailabilityAsync(http, authProvider, offer.CirclesAvailabilityFeed!, ct);
+                var avail = await FetchAvailabilityAsync(http, authProvider, cfg.AvailabilityUrl!, ct);
                 if (avail.IsError)
                 {
                     if (avail.Error == "Blocked private address")
@@ -96,10 +87,9 @@ public static class InventoryEndpoints
                 return Results.Json(avail.Value);
             }
 
-            // Fallback to inventoryFeed → derive availability
-            if (!string.IsNullOrWhiteSpace(offer.CirclesInventoryFeed))
+            if (!string.IsNullOrWhiteSpace(cfg.InventoryUrl))
             {
-                var inv = await FetchInventoryAsync(http, authProvider, offer.CirclesInventoryFeed!, ct);
+                var inv = await FetchInventoryAsync(http, authProvider, cfg.InventoryUrl!, ct);
                 if (inv.IsError)
                 {
                     if (inv.Error == "Blocked private address")
@@ -111,15 +101,19 @@ public static class InventoryEndpoints
                         statusCode: StatusCodes.Status502BadGateway);
                 }
 
-                // Availability derived from inventory: consider InStock when value > 0
                 string iri = inv.Value.Value > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock";
                 return Results.Json(iri);
             }
 
-            // Sold-once default for one-off items (no availabilityFeed and no inventoryFeed)
-            bool isSold = await oneOffStore.IsSoldAsync(chainId, seller, sku, ct);
-            string availability = isSold ? "https://schema.org/OutOfStock" : "https://schema.org/InStock";
-            return Results.Json(availability);
+            if (cfg.IsOneOff)
+            {
+                bool isSold = await oneOffStore.IsSoldAsync(chainId, seller, skuNorm, ct);
+                string availability = isSold ? "https://schema.org/OutOfStock" : "https://schema.org/InStock";
+                return Results.Json(availability);
+            }
+
+            return Results.Problem(title: "Not found", detail: "Availability not configured",
+                statusCode: StatusCodes.Status404NotFound);
         }
         catch (ArgumentException ex)
         {
@@ -142,7 +136,7 @@ public static class InventoryEndpoints
         long chainId,
         string seller,
         string sku,
-        IProductResolver resolver,
+        IMarketRouteStore routes,
         IHttpClientFactory http,
         IOneOffSalesStore oneOffStore,
         Circles.Market.Api.Auth.IOutboundServiceAuthProvider authProvider,
@@ -157,28 +151,21 @@ public static class InventoryEndpoints
 
         try
         {
-            // Validate and normalize seller address to prevent downstream exceptions
             seller = Utils.NormalizeAddr(seller);
-            var (product, _) = await resolver.ResolveProductAsync(chainId, seller, sku, ct);
-            if (product is null)
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            var cfg = await routes.TryGetAsync(chainId, seller, skuNorm, ct);
+            if (cfg is null || !cfg.IsConfigured)
             {
-                return Results.Problem(title: "Not found", detail: "Product not found",
+                return Results.Problem(title: "Not found", detail: "Product not configured",
                     statusCode: StatusCodes.Status404NotFound);
             }
 
-            var offer = product.Offers.FirstOrDefault();
-            if (offer is null)
+            if (string.IsNullOrWhiteSpace(cfg.InventoryUrl))
             {
-                return Results.Problem(title: "Data error", detail: "Product has no offers",
-                    statusCode: StatusCodes.Status502BadGateway);
-            }
-
-            if (string.IsNullOrWhiteSpace(offer.CirclesInventoryFeed))
-            {
-                // Only do the 0/1 fallback when the offer is truly one-off (inventoryFeed and availabilityFeed are both null/empty)
-                if (string.IsNullOrWhiteSpace(offer.CirclesAvailabilityFeed))
+                if (cfg.IsOneOff)
                 {
-                    bool isSold = await oneOffStore.IsSoldAsync(chainId, seller, sku, ct);
+                    bool isSold = await oneOffStore.IsSoldAsync(chainId, seller, skuNorm, ct);
                     var value = isSold ? 0 : 1;
                     var qv = new SchemaOrgQuantitativeValue
                     {
@@ -192,7 +179,7 @@ public static class InventoryEndpoints
                     statusCode: StatusCodes.Status502BadGateway);
             }
 
-            var inv = await FetchInventoryAsync(http, authProvider, offer.CirclesInventoryFeed!, ct);
+            var inv = await FetchInventoryAsync(http, authProvider, cfg.InventoryUrl!, ct);
             if (inv.IsError)
             {
                 if (inv.Error == "Blocked private address")
@@ -204,7 +191,6 @@ public static class InventoryEndpoints
                     statusCode: StatusCodes.Status502BadGateway);
             }
 
-            // Return the QuantitativeValue JSON object
             return Results.Json(inv.Value);
         }
         catch (ArgumentException ex)

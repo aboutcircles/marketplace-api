@@ -28,7 +28,8 @@ public class OperatorCatalogAvatarsCapTests
         ctx.Request.QueryString = new QueryString(q.ToString());
         ctx.Response.Body = new MemoryStream();
 
-        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, null, null, ctx, (Circles.Profiles.Market.OperatorCatalogService)null!, CancellationToken.None);
+        var routes = new AlwaysConfiguredRouteStore();
+        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, null, null, ctx, routes, (Circles.Profiles.Market.OperatorCatalogService)null!, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status400BadRequest));
         ctx.Response.Body.Position = 0;
@@ -59,7 +60,8 @@ public class OperatorCatalogAvatarsCapTests
         var reducer = new Circles.Profiles.Market.CatalogReducer(ipfs);
         var svc = new Circles.Profiles.Market.OperatorCatalogService(basic, reducer);
 
-        await OperatorCatalogEndpoint.Handle("0x1234567890123456789012345678901234567890", 100, 0, 0, 10, null, null, ctx, svc, CancellationToken.None);
+        var routes2 = new AlwaysConfiguredRouteStore();
+        await OperatorCatalogEndpoint.Handle("0x1234567890123456789012345678901234567890", 100, 0, 0, 10, null, null, ctx, routes2, svc, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status200OK));
     }
@@ -73,7 +75,8 @@ public class OperatorCatalogAvatarsCapTests
         ctx.Request.QueryString = new QueryString("?avatars=0x1&avatars=0x2&avatars=0x3");
         ctx.Response.Body = new MemoryStream();
 
-        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, null, null, ctx, (Circles.Profiles.Market.OperatorCatalogService)null!, CancellationToken.None);
+        var routes3 = new AlwaysConfiguredRouteStore();
+        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, null, null, ctx, routes3, (Circles.Profiles.Market.OperatorCatalogService)null!, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status400BadRequest));
         ctx.Response.Body.Position = 0;

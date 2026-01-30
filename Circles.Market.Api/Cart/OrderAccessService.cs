@@ -93,6 +93,10 @@ public sealed class OrderAccessService : IOrderAccessService
         if (!buyerMatches) return Task.FromResult<OrderSnapshot?>(null);
 
         var snapshot = _orders.Get(orderId);
+        if (snapshot is not null)
+        {
+            SanitizeOrderForExternalClients(snapshot);
+        }
         return Task.FromResult(snapshot);
     }
 
@@ -110,6 +114,14 @@ public sealed class OrderAccessService : IOrderAccessService
         int pageNumber = page < 1 ? 1 : page;
         int size = Math.Clamp(pageSize, MarketConstants.Defaults.PageSizeMin, MarketConstants.Defaults.PageSizeMax);
         var items = _orders.GetByBuyer(buyerAddress, chainId, pageNumber, size).ToList();
+        for (int i = 0; i < items.Count; i++)
+        {
+            var o = items[i];
+            if (o is not null)
+            {
+                SanitizeOrderForExternalClients(o);
+            }
+        }
         IReadOnlyList<OrderSnapshot> result = items;
         return Task.FromResult(result);
     }
@@ -193,6 +205,30 @@ public sealed class OrderAccessService : IOrderAccessService
         }
 
         return Task.FromResult<IReadOnlyList<Circles.Market.Api.Cart.SellerVisibility.SellerOrderDto>>(result);
+    }
+
+    private static void SanitizeOrderForExternalClients(OrderSnapshot order)
+    {
+        if (order is null)
+        {
+            throw new ArgumentNullException(nameof(order));
+        }
+
+        if (order.AcceptedOffer is null || order.AcceptedOffer.Count == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < order.AcceptedOffer.Count; i++)
+        {
+            var offer = order.AcceptedOffer[i];
+            if (offer is null)
+            {
+                continue;
+            }
+
+            offer.CirclesFulfillmentEndpoint = null;
+        }
     }
 
     public Task<Circles.Market.Api.Cart.SellerVisibility.SellerOrderDto?> GetOrderForSellerAsync(

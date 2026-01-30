@@ -12,6 +12,7 @@ using Circles.Market.Api.Payments;
 using Circles.Market.Api.Auth;
 using Circles.Market.Api.Cart.Validation;
 using Circles.Market.Api.Fulfillment;
+using Circles.Market.Api.Routing;
 using Circles.Market.Api.Pin;
 using System.Data.Common;
 
@@ -95,7 +96,13 @@ builder.Services.AddSingleton<IPaymentStore>(sp =>
 // Order payment flow: single owner of payment→order lifecycle
 // SSE bus + hooks that publish status changes to subscribers
 builder.Services.AddSingleton<IOrderStatusEventBus, InMemoryOrderStatusEventBus>();
-builder.Services.AddSingleton<IOrderLifecycleHooks, SseOrderLifecycleHooks>();
+builder.Services.AddSingleton<IOrderLifecycleHooks>(sp =>
+    new SseOrderLifecycleHooks(
+        sp.GetRequiredService<IOrderStatusEventBus>(),
+        sp.GetRequiredService<IOrderStore>(),
+        sp.GetRequiredService<IOrderFulfillmentClient>(),
+        sp.GetRequiredService<IMarketRouteStore>(),
+        sp.GetRequiredService<ILogger<SseOrderLifecycleHooks>>()));
 builder.Services.AddSingleton<IOrderPaymentFlow, OrderPaymentFlow>();
 
 // Fulfillment/Inventory HTTP clients: use named clients with no default auth headers
@@ -132,6 +139,12 @@ builder.Services.AddHttpClient("inventory", client =>
 
 builder.Services.AddSingleton<IOutboundServiceAuthProvider>(sp =>
     new PostgresOutboundServiceAuthProvider(pgConn!, sp.GetRequiredService<ILogger<PostgresOutboundServiceAuthProvider>>(), sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>()));
+
+builder.Services.AddSingleton<IMarketRouteStore>(sp =>
+    new PostgresMarketRouteStore(
+        pgConn!,
+        sp.GetRequiredService<ILogger<PostgresMarketRouteStore>>(),
+        sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>()));
 
 builder.Services.AddSingleton<IOrderFulfillmentClient, HttpOrderFulfillmentClient>();
 
@@ -256,13 +269,16 @@ app.Logger.LogInformation("[startup-config] {Key}={Value}", "ASPNETCORE_URLS",
 app.Logger.LogInformation("[startup-config] {Key}={Value}", "PORT",
     Environment.GetEnvironmentVariable("PORT") ?? "[unset]");
 
-// Ensure outbound credentials schema
+// Ensure outbound credentials schema + market routes schema
 using (var scope = app.Services.CreateScope())
 {
     if (scope.ServiceProvider.GetRequiredService<IOutboundServiceAuthProvider>() is PostgresOutboundServiceAuthProvider provider)
     {
         await provider.EnsureSchemaAsync(CancellationToken.None);
     }
+
+    var routeStore = scope.ServiceProvider.GetRequiredService<IMarketRouteStore>();
+    await routeStore.EnsureSchemaAsync(CancellationToken.None);
 }
 
 // Listen on configurable port: use ASPNETCORE_URLS if provided, otherwise
@@ -308,10 +324,11 @@ app.MapGet("/api/operator/{op}/catalog",
                 string? cursor,
                 int? offset,
                 HttpContext ctx,
+                IMarketRouteStore routes,
                 OperatorCatalogService opCatalog,
                 CancellationToken ct,
                 [FromServices] ILogger<OperatorCatalogService> logger)
-            => OperatorCatalogEndpoint.Handle(op, chainId, start, end, pageSize, cursor, offset, ctx, opCatalog, ct,
+            => OperatorCatalogEndpoint.Handle(op, chainId, start, end, pageSize, cursor, offset, ctx, routes, opCatalog, ct,
                 logger))
     .WithName("OperatorAggregatedCatalog")
     .WithSummary(
