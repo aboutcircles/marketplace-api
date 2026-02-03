@@ -234,8 +234,8 @@ The Market API hosts a background payments poller.
 *   `CHAIN_ID`: The blockchain network ID to monitor.
 *   `POLL_SECONDS`: Interval between poll cycles (default: `5`).
 *   `PAGE_SIZE`: Number of events to fetch per RPC call (default: `500`).
-*   `CONFIRM_CONFIRMATIONS`: Blocks before a payment is considered "confirmed".
-*   `FINALIZE_CONFIRMATIONS`: Blocks before a payment is considered "finalized".
+*   `CONFIRM_CONFIRMATIONS`: Blocks before a payment is considered "confirmed" (default: `3`).
+*   `FINALIZE_CONFIRMATIONS`: Blocks before a payment is considered "finalized" (default: `12`).
 *   `PAYMENT_GATEWAYS`: CSV list of payment gateway addresses to monitor.
 *   **RPC Requirement**: The RPC endpoint must support `eth_blockNumber` and `circles_query` for `CrcV2_PaymentGateway.PaymentReceived`.
 
