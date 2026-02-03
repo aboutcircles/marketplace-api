@@ -95,7 +95,7 @@ public sealed class CirclesPaymentsPoller : BackgroundService
 
         _finalizeConfirmations = int.TryParse(Environment.GetEnvironmentVariable("FINALIZE_CONFIRMATIONS"), out var fin)
             ? Math.Max(0, fin)
-            : 6;
+            : 12;
 
         if (_finalizeConfirmations > 0 && _confirmConfirmations > _finalizeConfirmations)
         {
@@ -159,6 +159,12 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         // 1) Ingest any new PaymentReceived logs (non-fatal if none)
         PaymentTransferRecord? lastTransfer = null;
         int processed = 0;
+        int observedRowCount = 0;
+
+        bool sawAnyRows = false;
+        long lastSeenBlock = 0;
+        int lastSeenTx = 0;
+        int lastSeenLog = 0;
 
         var (lastBlock, lastTx, lastLog) = await LoadCursorAsync(ct);
         var reqModel = BuildQuery(lastBlock, lastTx, lastLog);
@@ -178,9 +184,18 @@ public sealed class CirclesPaymentsPoller : BackgroundService
 
             if (result is not null && result.Rows.Length > 0)
             {
+                observedRowCount = result.Rows.Length;
                 var cols = result.Columns;
                 foreach (var row in result.Rows)
                 {
+                    if (TryExtractCursor(cols, row, out var seenBlock, out var seenTx, out var seenLog))
+                    {
+                        sawAnyRows = true;
+                        lastSeenBlock = seenBlock;
+                        lastSeenTx = seenTx;
+                        lastSeenLog = seenLog;
+                    }
+
                     var transfer = RowToPaymentTransfer(cols, row);
                     if (transfer is null) continue;
                     if (_gatewayAllowList != null &&
@@ -199,16 +214,31 @@ public sealed class CirclesPaymentsPoller : BackgroundService
             }
         }
 
-        if (lastTransfer is not null)
+        // IMPORTANT: Advance cursor based on the *last row observed*, even if the row is skipped
+        // (gateway filter, malformed data, missing payment reference, etc). Otherwise the poller
+        // can get stuck forever re-reading the same earliest unseen row.
+        if (sawAnyRows)
         {
-            await SaveCursorAsync(lastTransfer.BlockNumber ?? 0, lastTransfer.TransactionIndex ?? 0,
-                lastTransfer.LogIndex, ct);
+            await SaveCursorAsync(lastSeenBlock, lastSeenTx, lastSeenLog, ct);
         }
 
         if (processed > 0)
         {
-            _log.LogInformation("Payments poller ingested {Count} rows; cursor now {Block}/{Tx}/{Log}", processed,
-                lastTransfer?.BlockNumber, lastTransfer?.TransactionIndex, lastTransfer?.LogIndex);
+            _log.LogInformation(
+                "Payments poller ingested {Count} rows; cursor now {Block}/{Tx}/{Log}",
+                processed,
+                sawAnyRows ? lastSeenBlock : lastTransfer?.BlockNumber,
+                sawAnyRows ? lastSeenTx : lastTransfer?.TransactionIndex,
+                sawAnyRows ? lastSeenLog : lastTransfer?.LogIndex);
+        }
+        else if (sawAnyRows)
+        {
+            _log.LogInformation(
+                "Payments poller observed {Count} rows but processed none (filters/malformed); cursor advanced to {Block}/{Tx}/{Log}",
+                observedRowCount,
+                lastSeenBlock,
+                lastSeenTx,
+                lastSeenLog);
         }
 
         // 2) Regardless of ingestion, try to confirm and finalize eligible payments
@@ -507,6 +537,33 @@ ORDER BY first_block_number ASC";
         {
             _log.LogWarning(ex, "Failed to map CrcV2.PaymentReceived row");
             return null;
+        }
+    }
+
+    internal static bool TryExtractCursor(string[] cols, object[] row, out long block, out int txIndex, out int logIndex)
+    {
+        block = 0;
+        txIndex = 0;
+        logIndex = 0;
+
+        int Col(string n) => Array.FindIndex(cols, c => string.Equals(c, n, StringComparison.OrdinalIgnoreCase));
+        var ib = Col("blockNumber");
+        var itx = Col("transactionIndex");
+        var il = Col("logIndex");
+
+        if (ib < 0 || itx < 0 || il < 0) return false;
+        if (ib >= row.Length || itx >= row.Length || il >= row.Length) return false;
+
+        try
+        {
+            block = ToInt64(row[ib]);
+            txIndex = ToInt32(row[itx]);
+            logIndex = ToInt32(row[il]);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
