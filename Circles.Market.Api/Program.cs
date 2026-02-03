@@ -3,9 +3,9 @@ using System.Threading.RateLimiting;
 using Circles.Market.Api;
 using Circles.Market.Api.Admin;
 using Circles.Market.Api.Auth;
+using Circles.Market.Auth.Siwe;
 using Circles.Market.Api.Cart;
 using Circles.Market.Api.Cart.Validation;
-using Circles.Market.Api.Catalog;
 using Circles.Market.Api.Fulfillment;
 using Circles.Market.Api.Inventory;
 using Circles.Market.Api.Payments;
@@ -16,7 +16,7 @@ using Circles.Market.Shared.Admin;
 using Circles.Profiles.Interfaces;
 using Circles.Profiles.Market;
 using Circles.Profiles.Sdk;
-using Microsoft.AspNetCore.Mvc;
+using Circles.Profiles.Sdk.Utils;
 using Nethereum.Web3;
 
 static string SafeUrl(string url)
@@ -242,7 +242,25 @@ publicBuilder.Services.AddCors(options =>
 });
 
 // Auth: JWT + challenge store
-publicBuilder.Services.AddJwtAuth();
+var publicAuthOptions = new SiweAuthOptions
+{
+    AllowedDomainsEnv = "MARKET_AUTH_ALLOWED_DOMAINS",
+    PublicBaseUrlEnv = "PUBLIC_BASE_URL",
+    ExternalBaseUrlEnv = "EXTERNAL_BASE_URL",
+    JwtSecretEnv = "MARKET_JWT_SECRET",
+    JwtIssuerEnv = "MARKET_JWT_ISSUER",
+    JwtAudienceEnv = "MARKET_JWT_AUDIENCE",
+    RequirePublicBaseUrl = false,
+    RequireAllowlist = false
+};
+
+publicBuilder.Services.AddSiweJwtAuth(publicAuthOptions);
+publicBuilder.Services.AddSiweAuthService(
+    publicAuthOptions,
+    sp => new PostgresAuthChallengeStore(
+        Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")
+        ?? throw new Exception("POSTGRES_CONNECTION env variable is required"),
+        sp.GetRequiredService<ILogger<PostgresAuthChallengeStore>>()));
 
 var publicApp = publicBuilder.Build();
 
@@ -302,7 +320,7 @@ publicApp.UseAuthorization();
 publicApp.MapServiceApi();
 
 publicApp.MapCartApi();
-publicApp.MapAuthApi();
+publicApp.MapSiweAuthApi("/api/auth", "Sign in to Circles Market", MarketConstants.ContentTypes.JsonLdUtf8);
 publicApp.MapPinApi();
 publicApp.MapInventoryApi();
 publicApp.MapCanonicalizeApi();
@@ -311,7 +329,54 @@ var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
 adminBuilder.Logging.AddConsole();
 
-adminBuilder.Services.AddAdminAuthIssuer(pgConn!);
+var adminAuthOptions = new SiweAuthOptions
+{
+    AllowedDomainsEnv = "ADMIN_AUTH_ALLOWED_DOMAINS",
+    PublicBaseUrlEnv = "ADMIN_PUBLIC_BASE_URL",
+    JwtSecretEnv = "ADMIN_JWT_SECRET",
+    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
+    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE",
+    RequirePublicBaseUrl = true,
+    RequireAllowlist = true,
+    AllowlistEnv = "ADMIN_ADDRESSES"
+};
+
+// Admin CORS: dev-friendly, prod-safe
+var adminCorsOrigins = Environment.GetEnvironmentVariable("ADMIN_CORS_ALLOWED_ORIGINS");
+if (!string.IsNullOrWhiteSpace(adminCorsOrigins))
+{
+    adminBuilder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AdminCors", policy =>
+        {
+            policy.WithOrigins(adminCorsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                .AllowAnyMethod()
+                .AllowAnyHeader();
+        });
+    });
+}
+else if (adminBuilder.Environment.IsDevelopment())
+{
+    adminBuilder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AdminCors", policy =>
+        {
+            policy.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+                .AllowAnyMethod()
+                .AllowAnyHeader();
+        });
+    });
+}
+
+adminBuilder.Services.AddSiweJwtAuth(adminAuthOptions, AdminAuthConstants.Scheme);
+adminBuilder.Services.AddSiweAuthService(
+    adminAuthOptions,
+    sp => new PostgresAuthChallengeStore(
+        pgConn!,
+        sp.GetRequiredService<ILogger<PostgresAuthChallengeStore>>(),
+        tableName: "admin_auth_challenges"),
+    addressNormalizer: AddressUtils.NormalizeToLowercase,
+    addressValidator: AddressUtils.IsValidLowercaseAddress);
 adminBuilder.Services.AddAdminSignatureVerifier();
 
 int adminPort = AdminPortConfig.GetAdminPort("MARKET_ADMIN_PORT", 5090);
@@ -361,10 +426,17 @@ adminBuilder.Services.AddHttpClient("codedisp-admin", client =>
 
 var adminApp = adminBuilder.Build();
 
+// Enable CORS for admin app (only if configured or in dev)
+var adminCorsConfigured = !string.IsNullOrWhiteSpace(adminCorsOrigins) || adminApp.Environment.IsDevelopment();
+if (adminCorsConfigured)
+{
+    adminApp.UseCors("AdminCors");
+}
+
 adminApp.UseAuthentication();
 adminApp.UseAuthorization();
 
-adminApp.MapAdminAuthApi("/admin");
+adminApp.MapSiweAuthApi("/admin/auth", "Sign in as admin", AdminAuthConstants.ContentType);
 adminApp.MapMarketAdminApi("/admin", pgConn!);
 
 var publicTask = publicApp.RunAsync();

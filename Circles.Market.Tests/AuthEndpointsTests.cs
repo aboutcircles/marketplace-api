@@ -1,6 +1,4 @@
-using System.Text;
-using System.Text.Json;
-using Circles.Market.Api.Auth;
+using Circles.Market.Auth.Siwe;
 using Circles.Profiles.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,16 +21,6 @@ public class AuthEndpointsTests
         return ctx;
     }
 
-    private static Stream MakeBody(object payload)
-    {
-        var ms = new MemoryStream();
-        var json = JsonSerializer.Serialize(payload, Circles.Profiles.Models.JsonSerializerOptions.JsonLd);
-        var bytes = Encoding.UTF8.GetBytes(json);
-        ms.Write(bytes, 0, bytes.Length);
-        ms.Position = 0;
-        return ms;
-    }
-
     [Test]
     public async Task CreateChallenge_RejectsWhenHostNotAllowlisted()
     {
@@ -45,12 +33,10 @@ public class AuthEndpointsTests
 
             var ctx = MakeHttpContext("https", "evil.example.net");
             var payload = new ChallengeRequest { Address = "0xAbc0000000000000000000000000000000000000", ChainId = 100 };
-            ctx.Request.Body = MakeBody(payload);
 
-            var result = await InvokeCreateChallenge(ctx);
-            await result.ExecuteAsync(ctx);
-
-            Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status400BadRequest));
+            var service = CreateService();
+            var ex = Assert.ThrowsAsync<ArgumentException>(() => service.CreateChallengeAsync(ctx, payload, "Sign in to Circles Market"));
+            Assert.That(ex!.Message, Does.Contain("allowlisted"));
         }
         finally
         {
@@ -72,13 +58,10 @@ public class AuthEndpointsTests
 
             var ctx = MakeHttpContext("https", "evil.example.net");
             var payload = new ChallengeRequest { Address = "0xAbc0000000000000000000000000000000000000", ChainId = 100 };
-            ctx.Request.Body = MakeBody(payload);
 
-            var result = await InvokeCreateChallenge(ctx);
-            ctx.Response.Body = new MemoryStream();
-            await result.ExecuteAsync(ctx);
-
-            Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status200OK));
+            var service = CreateService();
+            var res = await service.CreateChallengeAsync(ctx, payload, "Sign in to Circles Market");
+            Assert.That(res.Message, Does.Contain("evil.example.net"));
         }
         finally
         {
@@ -101,21 +84,12 @@ public class AuthEndpointsTests
 
             var ctx = MakeHttpContext("https", "irrelevant.local");
             var payload = new ChallengeRequest { Address = "0xAbc0000000000000000000000000000000000000", ChainId = 100 };
-            ctx.Request.Body = MakeBody(payload);
 
-            var result = await InvokeCreateChallenge(ctx);
-            ctx.Response.Body = new MemoryStream();
-            await result.ExecuteAsync(ctx);
+            var service = CreateService();
+            var res = await service.CreateChallengeAsync(ctx, payload, "Sign in to Circles Market");
 
-            Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status200OK));
-
-            ctx.Response.Body.Position = 0;
-            using var reader = new StreamReader(ctx.Response.Body, Encoding.UTF8, leaveOpen: true);
-            var text = await reader.ReadToEndAsync();
-            using var doc = JsonDocument.Parse(text);
-            var msg = doc.RootElement.GetProperty("message").GetString();
-            Assert.That(msg, Does.Contain("URI: https://market.example.com"));
-            Assert.That(msg, Does.StartWith("market.example.com wants you"));
+            Assert.That(res.Message, Does.Contain("URI: https://market.example.com"));
+            Assert.That(res.Message, Does.StartWith("market.example.com wants you"));
         }
         finally
         {
@@ -129,9 +103,6 @@ public class AuthEndpointsTests
     public async Task Verify_MarksChallengeAtomically_AllowsOnceThen401()
     {
         // Arrange
-        var ctx1 = MakeHttpContext("https", "market.example.com");
-        var ctx2 = MakeHttpContext("https", "market.example.com");
-
         var chId = Guid.NewGuid();
         var ch = new AuthChallenge
         {
@@ -156,17 +127,16 @@ public class AuthEndpointsTests
         var tokens = new Mock<ITokenService>(MockBehavior.Strict);
         tokens.Setup(t => t.Issue(It.IsAny<TokenSubject>(), It.IsAny<TimeSpan>())).Returns("tkn");
 
-        var req = new VerifyRequest { ChallengeId = chId, Signature = "0x00" };
+        // 65-byte signature: 32 bytes r + 32 bytes s + 1 byte v (v=27 is valid)
+        var req = new VerifyRequest { ChallengeId = chId, Signature = "0x" + new string('0', 128) + "1b" };
 
         // Act 1: first verify succeeds
-        var result1 = await AuthEndpoints_Verify(ctx1, req, store.Object, verifier.Object, tokens.Object, CancellationToken.None);
-        await result1.ExecuteAsync(ctx1);
-        Assert.That(ctx1.Response.StatusCode, Is.EqualTo(StatusCodes.Status200OK));
+        var result1 = await AuthEndpoints_Verify(req, store.Object, verifier.Object, tokens.Object, CancellationToken.None);
+        Assert.That(result1.Success, Is.True);
 
         // Act 2: second verify fails due to already used
-        var result2 = await AuthEndpoints_Verify(ctx2, req, store.Object, verifier.Object, tokens.Object, CancellationToken.None);
-        await result2.ExecuteAsync(ctx2);
-        Assert.That(ctx2.Response.StatusCode, Is.EqualTo(StatusCodes.Status401Unauthorized));
+        var result2 = await AuthEndpoints_Verify(req, store.Object, verifier.Object, tokens.Object, CancellationToken.None);
+        Assert.That(result2.Success, Is.False);
 
         store.VerifyAll();
         verifier.VerifyAll();
@@ -174,18 +144,52 @@ public class AuthEndpointsTests
     }
 
     // Helpers to invoke private static methods via local wrappers
-    private static Task<IResult> InvokeCreateChallenge(HttpContext ctx)
+    private static SiweAuthService CreateService()
     {
-        // Accessing the private method directly within same assembly is not possible; but it's internal static in same namespace/class.
-        // We create a local lambda to call it via reflection.
-        var mi = typeof(AuthEndpoints).GetMethod("CreateChallenge", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-        return (Task<IResult>)mi.Invoke(null, new object?[] { ctx, new DummyStore() })!;
+        var options = new SiweAuthOptions
+        {
+            AllowedDomainsEnv = "MARKET_AUTH_ALLOWED_DOMAINS",
+            PublicBaseUrlEnv = "PUBLIC_BASE_URL",
+            ExternalBaseUrlEnv = "EXTERNAL_BASE_URL",
+            JwtSecretEnv = "MARKET_JWT_SECRET",
+            JwtIssuerEnv = "MARKET_JWT_ISSUER",
+            JwtAudienceEnv = "MARKET_JWT_AUDIENCE",
+            RequirePublicBaseUrl = false
+        };
+
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
+        return new SiweAuthService(
+            options,
+            new DummyStore(),
+            new Mock<ISafeBytesVerifier>().Object,
+            new Mock<ITokenService>().Object,
+            loggerFactory);
     }
 
-    private static Task<IResult> AuthEndpoints_Verify(HttpContext ctx, VerifyRequest req, IAuthChallengeStore store, ISafeBytesVerifier safeVerifier, ITokenService tokens, CancellationToken ct)
+    private static async Task<(bool Success, VerifyResponse? Response)> AuthEndpoints_Verify(VerifyRequest req, IAuthChallengeStore store, ISafeBytesVerifier safeVerifier, ITokenService tokens, CancellationToken ct)
     {
-        var mi = typeof(AuthEndpoints).GetMethod("Verify", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-        return (Task<IResult>)mi.Invoke(null, new object?[] { ctx, req, store, safeVerifier, tokens, ct })!;
+        var options = new SiweAuthOptions
+        {
+            AllowedDomainsEnv = "MARKET_AUTH_ALLOWED_DOMAINS",
+            PublicBaseUrlEnv = "PUBLIC_BASE_URL",
+            ExternalBaseUrlEnv = "EXTERNAL_BASE_URL",
+            JwtSecretEnv = "MARKET_JWT_SECRET",
+            JwtIssuerEnv = "MARKET_JWT_ISSUER",
+            JwtAudienceEnv = "MARKET_JWT_AUDIENCE",
+            RequirePublicBaseUrl = false
+        };
+
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
+        var service = new SiweAuthService(options, store, safeVerifier, tokens, loggerFactory);
+        try
+        {
+            var res = await service.VerifyAsync(req, ct);
+            return (true, res);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (false, null);
+        }
     }
 
     // Dummy store used only for CreateChallenge path (save call), not for Verify tests

@@ -50,17 +50,16 @@ internal sealed class LiveInventoryClient : ILiveInventoryClient
                 HttpResponseMessage resp;
                 if (header != null)
                 {
-                    var req = new HttpRequestMessage(HttpMethod.Get, uri);
+                    using var req = new HttpRequestMessage(HttpMethod.Get, uri);
                     req.Headers.TryAddWithoutValidation(OutboundGuards.HopHeader, "1");
                     req.Headers.TryAddWithoutValidation(header.Value.headerName, header.Value.apiKey);
                     resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
                 }
                 else
                 {
-                    resp = await OutboundGuards.SendWithRedirectsAsync(client, new HttpRequestMessage(HttpMethod.Get, uri)
-                    {
-                        Headers = { { OutboundGuards.HopHeader, "1" } }
-                    }, OutboundGuards.GetMaxRedirects(), u => new HttpRequestMessage(HttpMethod.Get, u)
+                    using var initialReq = new HttpRequestMessage(HttpMethod.Get, uri);
+                    initialReq.Headers.TryAddWithoutValidation(OutboundGuards.HopHeader, "1");
+                    resp = await OutboundGuards.SendWithRedirectsAsync(client, initialReq, OutboundGuards.GetMaxRedirects(), u => new HttpRequestMessage(HttpMethod.Get, u)
                     {
                         Headers = { { OutboundGuards.HopHeader, "1" } }
                     }, timeoutCts.Token);

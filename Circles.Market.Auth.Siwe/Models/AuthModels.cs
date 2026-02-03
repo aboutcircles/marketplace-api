@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace Circles.Market.Api.Auth;
+namespace Circles.Market.Auth.Siwe;
 
 /// <summary>
 /// Request to generate a SIWE-style challenge message for an address on a given chain.
@@ -8,7 +8,7 @@ namespace Circles.Market.Api.Auth;
 public sealed class ChallengeRequest
 {
     [JsonPropertyName("address")] public string Address { get; set; } = string.Empty;
-    [JsonPropertyName("chainId")] public long ChainId { get; set; } = MarketConstants.Defaults.ChainId;
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
     [JsonPropertyName("statement")] public string? Statement { get; set; }
     [JsonPropertyName("expirationMinutes")] public int? ExpirationMinutes { get; set; }
 }

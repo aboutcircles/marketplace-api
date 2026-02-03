@@ -1,24 +1,19 @@
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
-namespace Circles.Market.Shared.Admin;
+namespace Circles.Market.Auth.Siwe;
 
-public interface IAdminAuthChallengeStore
-{
-    Task SaveAsync(AdminAuthChallenge ch, CancellationToken ct = default);
-    Task<AdminAuthChallenge?> GetAsync(Guid id, CancellationToken ct = default);
-    Task<bool> TryMarkUsedAsync(Guid id, CancellationToken ct = default);
-}
-
-public sealed class PostgresAdminAuthChallengeStore : IAdminAuthChallengeStore
+public sealed class PostgresAuthChallengeStore : IAuthChallengeStore
 {
     private readonly string _connString;
-    private readonly ILogger<PostgresAdminAuthChallengeStore> _log;
+    private readonly string _tableName;
+    private readonly ILogger<PostgresAuthChallengeStore> _log;
 
-    public PostgresAdminAuthChallengeStore(string connString, ILogger<PostgresAdminAuthChallengeStore> log)
+    public PostgresAuthChallengeStore(string connString, ILogger<PostgresAuthChallengeStore> log, string tableName = "auth_challenges")
     {
         _connString = connString ?? throw new ArgumentNullException(nameof(connString));
         _log = log ?? throw new ArgumentNullException(nameof(log));
+        _tableName = string.IsNullOrWhiteSpace(tableName) ? "auth_challenges" : tableName;
         EnsureSchema();
     }
 
@@ -29,8 +24,8 @@ public sealed class PostgresAdminAuthChallengeStore : IAdminAuthChallengeStore
             using var conn = new NpgsqlConnection(_connString);
             conn.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"
-CREATE TABLE IF NOT EXISTS admin_auth_challenges (
+            cmd.CommandText = $@"
+CREATE TABLE IF NOT EXISTS {_tableName} (
   id uuid PRIMARY KEY,
   address text NOT NULL,
   chain_id bigint NOT NULL,
@@ -45,22 +40,22 @@ CREATE TABLE IF NOT EXISTS admin_auth_challenges (
             cmd.ExecuteNonQuery();
 
             using var ix = conn.CreateCommand();
-            ix.CommandText = "CREATE INDEX IF NOT EXISTS ix_admin_auth_addr_nonce ON admin_auth_challenges (address, nonce);";
+            ix.CommandText = $"CREATE INDEX IF NOT EXISTS ix_{_tableName}_addr_nonce ON {_tableName} (address, nonce);";
             ix.ExecuteNonQuery();
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Failed to ensure admin_auth_challenges schema");
+            _log.LogError(ex, "Failed to ensure {Table} schema", _tableName);
             throw;
         }
     }
 
-    public async Task SaveAsync(AdminAuthChallenge ch, CancellationToken ct = default)
+    public async Task SaveAsync(AuthChallenge ch, CancellationToken ct = default)
     {
         await using var conn = new NpgsqlConnection(_connString);
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"INSERT INTO admin_auth_challenges (id, address, chain_id, nonce, message, issued_at, expires_at, user_agent, ip)
+        cmd.CommandText = $@"INSERT INTO {_tableName} (id, address, chain_id, nonce, message, issued_at, expires_at, user_agent, ip)
 VALUES (@id, @addr, @chain, @nonce, @msg, @iat, @exp, @ua, @ip)";
         cmd.Parameters.AddWithValue("@id", ch.Id);
         cmd.Parameters.AddWithValue("@addr", ch.Address.ToLowerInvariant());
@@ -74,16 +69,16 @@ VALUES (@id, @addr, @chain, @nonce, @msg, @iat, @exp, @ua, @ip)";
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    public async Task<AdminAuthChallenge?> GetAsync(Guid id, CancellationToken ct = default)
+    public async Task<AuthChallenge?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await using var conn = new NpgsqlConnection(_connString);
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT address, chain_id, nonce, message, issued_at, expires_at, used_at, user_agent, ip FROM admin_auth_challenges WHERE id=@id";
+        cmd.CommandText = $"SELECT address, chain_id, nonce, message, issued_at, expires_at, used_at, user_agent, ip FROM {_tableName} WHERE id=@id";
         cmd.Parameters.AddWithValue("@id", id);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct)) return null;
-        return new AdminAuthChallenge
+        return new AuthChallenge
         {
             Id = id,
             Address = reader.GetString(0),
@@ -103,7 +98,7 @@ VALUES (@id, @addr, @chain, @nonce, @msg, @iat, @exp, @ua, @ip)";
         await using var conn = new NpgsqlConnection(_connString);
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = @"UPDATE admin_auth_challenges
+        cmd.CommandText = $@"UPDATE {_tableName}
 SET used_at = now()
 WHERE id = @id
   AND used_at IS NULL

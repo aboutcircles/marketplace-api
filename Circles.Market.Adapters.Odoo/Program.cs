@@ -3,6 +3,7 @@ using Circles.Market.Adapters.Odoo;
 using Circles.Market.Adapters.Odoo.Admin;
 using Circles.Market.Adapters.Odoo.Auth;
 using Circles.Market.Adapters.Odoo.Db;
+using Circles.Market.Auth.Siwe;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
 

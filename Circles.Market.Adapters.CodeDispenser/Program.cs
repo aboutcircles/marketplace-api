@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Circles.Market.Adapters.CodeDispenser;
 using Circles.Market.Adapters.CodeDispenser.Admin;
+using Circles.Market.Auth.Siwe;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
 using Npgsql;
