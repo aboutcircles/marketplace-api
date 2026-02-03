@@ -251,6 +251,20 @@ public static class AdminAuthEndpoints
         try { sigBytes = req.Signature.HexToByteArray(); }
         catch { return Results.StatusCode(StatusCodes.Status401Unauthorized); }
 
+        // Signature must be 65 bytes: r(32) + s(32) + v(1)
+        if (sigBytes.Length != 65)
+        {
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+        }
+
+        // Accept common v encodings.
+        // 27/28 are legacy, 0/1 are also widely used.
+        var v = sigBytes[64];
+        if (v is not (0 or 1 or 27 or 28))
+        {
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+        }
+
         string message = ch.Message;
         byte[] messageBytes = Encoding.UTF8.GetBytes(message);
 
@@ -258,6 +272,16 @@ public static class AdminAuthEndpoints
         try
         {
             ok = await safeVerifier.Verify1271WithBytesAsync(messageBytes, ch.Address, sigBytes, ct);
+        }
+        catch (ArgumentException ex)
+        {
+            log.LogWarning(ex, "Admin verification rejected malformed signature");
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+        }
+        catch (FormatException ex)
+        {
+            log.LogWarning(ex, "Admin verification rejected malformed signature");
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
         }
         catch (HttpRequestException ex)
         {

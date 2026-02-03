@@ -39,9 +39,19 @@ public static class AdminEndpoints
         return true;
     }
 
-    private static async Task<(bool ok, T? body)> TryGetJsonAsync<T>(HttpClient client, string path, CancellationToken ct)
+    private static async Task<(bool ok, T? body)> TryGetJsonAsync<T>(
+        HttpClient client,
+        string path,
+        AuthenticationHeaderValue? bearer,
+        CancellationToken ct)
     {
-        using var response = await client.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var req = new HttpRequestMessage(HttpMethod.Get, path);
+        if (bearer is not null)
+        {
+            req.Headers.Authorization = bearer;
+        }
+
+        using var response = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
         if (!response.IsSuccessStatusCode)
         {
             return (false, default);
@@ -157,21 +167,27 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             return Results.Json(new { ok = true });
         });
 
-        group.MapGet("/odoo-products", async (IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        group.MapGet("/odoo-products", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
         {
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
             var odooClient = httpClientFactory.CreateClient("odoo-admin");
-            var (ok, mappings) = await TryGetJsonAsync<List<AdminOdooProductDto>>(odooClient, "/admin/mappings", ct);
+            var (ok, mappings) = await TryGetJsonAsync<List<AdminOdooProductDto>>(odooClient, "/admin/mappings", bearerHeader, ct);
             if (!ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
             return Results.Json(mappings ?? new List<AdminOdooProductDto>());
         });
 
-        group.MapGet("/code-products", async (IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        group.MapGet("/code-products", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
         {
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
             var codeClient = httpClientFactory.CreateClient("codedisp-admin");
-            var (okMappings, mappings) = await TryGetJsonAsync<List<AdminCodeProductDto>>(codeClient, "/admin/mappings", ct);
+            var (okMappings, mappings) = await TryGetJsonAsync<List<AdminCodeProductDto>>(codeClient, "/admin/mappings", bearerHeader, ct);
             if (!okMappings) return Results.StatusCode(StatusCodes.Status502BadGateway);
 
-            var (okPools, pools) = await TryGetJsonAsync<List<AdminCodePoolDto>>(codeClient, "/admin/code-pools", ct);
+            var (okPools, pools) = await TryGetJsonAsync<List<AdminCodePoolDto>>(codeClient, "/admin/code-pools", bearerHeader, ct);
             if (!okPools) return Results.StatusCode(StatusCodes.Status502BadGateway);
 
             var remainingByPool = (pools ?? new List<AdminCodePoolDto>()).ToDictionary(p => p.PoolId, p => p.Remaining, StringComparer.Ordinal);
