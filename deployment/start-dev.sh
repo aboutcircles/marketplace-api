@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.dev.yml"
 ENV_FILE="$SCRIPT_DIR/.env"
+SHOW_SECRETS=false
 
 # Color codes for output
 RED='\033[0;31m'
@@ -65,6 +66,11 @@ check_prerequisites() {
     set +a
 
     # Apply defaults for optional ports if not set in .env
+    : "${MARKET_ADMIN_PORT:=5090}"
+    : "${MARKET_ODOO_ADMIN_PORT:=5688}"
+    : "${MARKET_CODEDISP_ADMIN_PORT:=5690}"
+
+    # Apply defaults for optional ports if not set in .env
     : "${MARKET_API_PORT:=5084}"
     : "${MARKET_ODOO_ADAPTER_PORT:=5678}"
     : "${MARKET_CODE_DISPENSER_PORT:=5680}"
@@ -80,6 +86,40 @@ check_prerequisites() {
     # Database names and users (at least MARKET_API is required for the app to function)
     if [ -z "$DB_MARKET_API" ] || [ -z "$DB_MARKET_API_USER" ]; then
         missing_vars+=("DB_MARKET_API, DB_MARKET_API_USER")
+    fi
+
+    # Market API auth
+    if [ -z "$MARKET_JWT_SECRET" ]; then
+        missing_vars+=("MARKET_JWT_SECRET")
+    fi
+
+    if [ -z "$MARKET_AUTH_ALLOWED_DOMAINS" ]; then
+        missing_vars+=("MARKET_AUTH_ALLOWED_DOMAINS")
+    fi
+
+    # Admin auth prerequisites
+    if [ -z "$RPC" ]; then
+        missing_vars+=("RPC")
+    fi
+
+    if [ -z "$CIRCLES_SERVICE_KEY" ]; then
+        missing_vars+=("CIRCLES_SERVICE_KEY")
+    fi
+
+    if [ -z "$ADMIN_JWT_SECRET" ]; then
+        missing_vars+=("ADMIN_JWT_SECRET")
+    fi
+
+    if [ -z "$ADMIN_PUBLIC_BASE_URL" ]; then
+        missing_vars+=("ADMIN_PUBLIC_BASE_URL")
+    fi
+
+    if [ -z "$ADMIN_AUTH_ALLOWED_DOMAINS" ]; then
+        missing_vars+=("ADMIN_AUTH_ALLOWED_DOMAINS")
+    fi
+
+    if [ -z "$ADMIN_ADDRESSES" ]; then
+        missing_vars+=("ADMIN_ADDRESSES")
     fi
 
     if [ ${#missing_vars[@]} -gt 0 ]; then
@@ -122,6 +162,9 @@ output_endpoints() {
     local market_api_port="${MARKET_API_PORT:-5084}"
     local odoo_adapter_port="${MARKET_ODOO_ADAPTER_PORT:-5678}"
     local code_dispenser_port="${MARKET_CODE_DISPENSER_PORT:-5680}"
+    local market_admin_port="${MARKET_ADMIN_PORT:-5090}"
+    local odoo_admin_port="${MARKET_ODOO_ADMIN_PORT:-5688}"
+    local codedisp_admin_port="${MARKET_CODEDISP_ADMIN_PORT:-5690}"
 
     echo ""
     log_success "==========================================="
@@ -141,12 +184,21 @@ output_endpoints() {
     echo -e "  Code Dispenser:     ${BLUE}http://localhost:${code_dispenser_port}${NC}"
     echo ""
 
+    # Display Admin endpoints
+    echo -e "${BOLD}${CYAN}Admin Ports${NC}"
+    echo -e "  Market Admin API:   ${BLUE}http://localhost:${market_admin_port}${NC}"
+    echo -e "  Odoo Admin API:     ${BLUE}http://localhost:${odoo_admin_port}${NC}"
+    echo -e "  CodeDisp Admin API: ${BLUE}http://localhost:${codedisp_admin_port}${NC}"
+    echo ""
+
     # Check if nginx container exists and is running
     local nginx_running=$(docker ps --format '{{.Names}}' | grep -E 'nginx$' || true)
 
     if [ -n "$nginx_running" ]; then
         echo -e "${BOLD}${CYAN}Proxy${NC}"
         echo -e "  Nginx Proxy:        ${BLUE}http://localhost:18080${NC}"
+        echo -e "  Market via proxy:   ${BLUE}http://localhost:18080/market${NC}"
+        echo -e "  Admin via proxy:    ${BLUE}http://localhost:18080/market/admin${NC}"
         echo ""
     fi
 
@@ -171,34 +223,50 @@ output_endpoints() {
     echo -e "  Host:     ${BLUE}localhost${NC}"
     echo -e "  Port:     ${BLUE}${MARKET_POSTGRES_PORT}${NC}"
     echo -e "  User:     ${BLUE}${POSTGRES_USER}${NC}"
-    echo -e "  Password: ${GREEN}${POSTGRES_PASSWORD}${NC}"
+    if [ "$SHOW_SECRETS" = true ]; then
+        echo -e "  Password: ${GREEN}${POSTGRES_PASSWORD}${NC}"
+    else
+        echo -e "  Password: ${GREEN}***${NC}"
+    fi
     echo ""
 
     # Individual database connection strings
     if [ -n "${DB_MARKET_API:-}" ] && [ -n "${DB_MARKET_API_USER:-}" ]; then
         local market_pass="${DB_MARKET_API_PASSWORD:-not_set}"
+        local market_pass_display="${market_pass}"
+        if [ "$SHOW_SECRETS" != true ]; then
+            market_pass_display="***"
+        fi
         echo -e "  ${BOLD}Market API Database${NC}"
         echo -e "    Name:     ${BLUE}${DB_MARKET_API}${NC}"
         echo -e "    User:     ${BLUE}${DB_MARKET_API_USER}${NC}"
-        echo -e "    Password: ${GREEN}${market_pass}${NC}"
+        echo -e "    Password: ${GREEN}${market_pass_display}${NC}"
         echo ""
     fi
 
     if [ -n "${DB_CODEDISP:-}" ] && [ -n "${DB_CODEDISP_USER:-}" ]; then
         local codedisp_pass="${DB_CODEDISP_PASSWORD:-not_set}"
+        local codedisp_pass_display="${codedisp_pass}"
+        if [ "$SHOW_SECRETS" != true ]; then
+            codedisp_pass_display="***"
+        fi
         echo -e "  ${BOLD}Code Dispenser Database${NC}"
         echo -e "    Name:     ${BLUE}${DB_CODEDISP}${NC}"
         echo -e "    User:     ${BLUE}${DB_CODEDISP_USER}${NC}"
-        echo -e "    Password: ${GREEN}${codedisp_pass}${NC}"
+        echo -e "    Password: ${GREEN}${codedisp_pass_display}${NC}"
         echo ""
     fi
 
     if [ -n "${DB_ODOO:-}" ] && [ -n "${DB_ODOO_USER:-}" ]; then
         local odoo_pass="${DB_ODOO_PASSWORD:-not_set}"
+        local odoo_pass_display="${odoo_pass}"
+        if [ "$SHOW_SECRETS" != true ]; then
+            odoo_pass_display="***"
+        fi
         echo -e "  ${BOLD}Odoo Database${NC}"
         echo -e "    Name:     ${BLUE}${DB_ODOO}${NC}"
         echo -e "    User:     ${BLUE}${DB_ODOO_USER}${NC}"
-        echo -e "    Password: ${GREEN}${odoo_pass}${NC}"
+        echo -e "    Password: ${GREEN}${odoo_pass_display}${NC}"
         echo ""
     fi
 
@@ -207,22 +275,34 @@ output_endpoints() {
 
     if [ -n "${DB_MARKET_API:-}" ] && [ -n "${DB_MARKET_API_USER:-}" ]; then
         local market_pass="${DB_MARKET_API_PASSWORD:-${POSTGRES_PASSWORD}}"
+        local market_pass_display="${market_pass}"
+        if [ "$SHOW_SECRETS" != true ]; then
+            market_pass_display="***"
+        fi
         echo -e "  ${BOLD}Market API:${NC}"
-        echo -e "    PGPASSWORD=${market_pass} psql -h localhost -p ${MARKET_POSTGRES_PORT} -U ${DB_MARKET_API_USER} -d ${DB_MARKET_API}"
+        echo -e "    PGPASSWORD=${market_pass_display} psql -h localhost -p ${MARKET_POSTGRES_PORT} -U ${DB_MARKET_API_USER} -d ${DB_MARKET_API}"
         echo ""
     fi
 
     if [ -n "${DB_CODEDISP:-}" ] && [ -n "${DB_CODEDISP_USER:-}" ]; then
         local codedisp_pass="${DB_CODEDISP_PASSWORD:-${POSTGRES_PASSWORD}}"
+        local codedisp_pass_display="${codedisp_pass}"
+        if [ "$SHOW_SECRETS" != true ]; then
+            codedisp_pass_display="***"
+        fi
         echo -e "  ${BOLD}Code Dispenser:${NC}"
-        echo -e "    PGPASSWORD=${codedisp_pass} psql -h localhost -p ${MARKET_POSTGRES_PORT} -U ${DB_CODEDISP_USER} -d ${DB_CODEDISP}"
+        echo -e "    PGPASSWORD=${codedisp_pass_display} psql -h localhost -p ${MARKET_POSTGRES_PORT} -U ${DB_CODEDISP_USER} -d ${DB_CODEDISP}"
         echo ""
     fi
 
     if [ -n "${DB_ODOO:-}" ] && [ -n "${DB_ODOO_USER:-}" ]; then
         local odoo_pass="${DB_ODOO_PASSWORD:-${POSTGRES_PASSWORD}}"
+        local odoo_pass_display="${odoo_pass}"
+        if [ "$SHOW_SECRETS" != true ]; then
+            odoo_pass_display="***"
+        fi
         echo -e "  ${BOLD}Odoo:${NC}"
-        echo -e "    PGPASSWORD=${odoo_pass} psql -h localhost -p ${MARKET_POSTGRES_PORT} -U ${DB_ODOO_USER} -d ${DB_ODOO}"
+        echo -e "    PGPASSWORD=${odoo_pass_display} psql -h localhost -p ${MARKET_POSTGRES_PORT} -U ${DB_ODOO_USER} -d ${DB_ODOO}"
         echo ""
     fi
 
@@ -238,6 +318,10 @@ output_endpoints() {
 main() {
     log_info "Development Environment Starter"
     echo ""
+
+    if [ "${1:-}" = "--show-secrets" ]; then
+        SHOW_SECRETS=true
+    fi
 
     check_prerequisites
     start_services

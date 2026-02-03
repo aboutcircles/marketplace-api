@@ -1,6 +1,27 @@
 #!/bin/bash
 set -e
-source "$(dirname "$0")/_lib.sh"
+
+help_requested() {
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+print_usage() {
+  local name="$1"
+  local usage="$2"
+  local exit_code="${3:-1}"
+  echo "Usage: $name $usage"
+  exit "$exit_code"
+}
+
+die() {
+  echo "Error: $1" >&2
+  exit 1
+}
 
 USAGE="<db_alias> [psql_args...]
 

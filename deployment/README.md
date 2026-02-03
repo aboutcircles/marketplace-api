@@ -33,6 +33,19 @@ The following variables are used solely by the market api. They configure profil
 * `MARKET_JWT_SECRET`: The JWT secret for signing and verifying tokens.
 * `DB_MARKET_API_PASSWORD`: The password for the market-api db user.
 
+Admin auth (Market admin app mints, adapters validate):
+* `ADMIN_JWT_SECRET`: HMAC secret for admin JWT signing/validation.
+* `ADMIN_JWT_ISSUER`: Issuer for admin JWTs (default `Circles.Market.Admin`).
+* `ADMIN_JWT_AUDIENCE`: Audience for admin JWTs (default `market-admin`).
+* `ADMIN_ADDRESSES`: Comma-separated allowlist of admin wallet addresses.
+* `ADMIN_AUTH_ALLOWED_DOMAINS`: Allowed domains for admin SIWE base URL.
+* `ADMIN_PUBLIC_BASE_URL`: Public base URL used in admin SIWE message.
+
+Market admin proxy internals (for adapter admin calls):
+* `ODOO_ADMIN_INTERNAL_URL`: Absolute URL for Odoo adapter admin host (e.g. `http://market-adapter-odoo:${MARKET_ODOO_ADMIN_PORT}`).
+* `CODEDISP_ADMIN_INTERNAL_URL`: Absolute URL for CodeDispenser adapter admin host (e.g. `http://market-adapter-codedispenser:${MARKET_CODEDISP_ADMIN_PORT}`).
+* `ADMIN_PROXY_ALLOWED_HOSTS`: Comma-separated host allowlist for admin proxy targets.
+
 Outbound adapter auth (env-based shared secrets):
 * `MARKET_ODOO_ADAPTER_TOKEN`: Shared secret for outbound calls to the Odoo adapter.
 * `MARKET_CODE_DISPENSER_TOKEN`: Shared secret for outbound calls to the CodeDispenser adapter.
@@ -41,9 +54,8 @@ Outbound adapter auth (env-based shared secrets):
 * `MARKET_CODE_DISPENSER_ORIGIN`: (Optional) Override the CodeDispenser adapter origin.
 
 ##### 1.2.3 Code Dispenser configuration
-* `CODE_DISPENSER_TAG`: The image tag for the code dispenser container (e.g., `latest`).
-* `CODE_DISPENSER_JWT_SECRET`: The secret for signing and verifying tokens for the code dispenser.
-* `DB_CODE_DISPENSER_PASSWORD`: The password for the code dispenser db user.
+* `MARKET_ADAPTER_CODEDISP_TAG`: The image tag for the code dispenser container (e.g., `latest`).
+* `DB_CODEDISP_PASSWORD`: The password for the code dispenser db user.
 
 ##### 1.2.4 Odoo configuration
 * `MARKET_ADAPTER_ODOO_TAG`: The image tag for the market adapter odoo container (e.g., `latest`).
@@ -60,7 +72,7 @@ For the rest of this guid we assume the development environment.
 Navigate to `Circles.Market/deployment`, then run `start-dev.sh`. This script will start all services in
 `docker-compose.dev.yml` and output connection details for every service.
 
-**WARNING**: The output of `start-dev.sh` command **logs all sensitive credentials from the .env file** to the console.
+By default, `start-dev.sh` redacts secrets in its output. Pass `--show-secrets` if you explicitly want to print credentials.
 ```shell
 cd Circles.Market/deployment
 ./start-dev.sh
@@ -82,6 +94,11 @@ Adapters
   Odoo Adapter:       http://localhost:65002
   Code Dispenser:     http://localhost:65003
 
+Admin Ports (loopback-only recommended)
+  Market Admin API:   http://localhost:65005
+  Odoo Admin API:     http://localhost:65006
+  CodeDisp Admin API: http://localhost:65007
+
 External Dependencies
   IPFS Gateway:       http://localhost:8000/ipfs/
   IPFS RPC:           http://localhost:5001/api/v0/
@@ -91,32 +108,32 @@ PostgreSQL Databases
   Host:     localhost
   Port:     65004
   User:     postgres
-  Password: postgres
+  Password: ***
 
   Market API Database
     Name:     circles_market_api
     User:     market_api
-    Password: market_api
+    Password: ***
 
   Code Dispenser Database
     Name:     circles_codedisp
     User:     codedisp
-    Password: codedisp
+    Password: ***
 
   Odoo Database
     Name:     circles_odoo
     User:     odoo
-    Password: odoo
+    Password: ***
 
 Connection Strings (psql)
   Market API:
-    PGPASSWORD=market_api psql -h localhost -p 65004 -U market_api -d circles_market_api
+    PGPASSWORD=*** psql -h localhost -p 65004 -U market_api -d circles_market_api
 
   Code Dispenser:
-    PGPASSWORD=codedisp psql -h localhost -p 65004 -U codedisp -d circles_codedisp
+    PGPASSWORD=*** psql -h localhost -p 65004 -U codedisp -d circles_codedisp
 
   Odoo:
-    PGPASSWORD=odoo psql -h localhost -p 65004 -U odoo -d circles_odoo
+    PGPASSWORD=*** psql -h localhost -p 65004 -U odoo -d circles_odoo
 
 [start-dev] Additional Commands:
   Stop environment:   ./stop-dev.sh
@@ -133,6 +150,20 @@ docker compose -f docker-compose.dev.yml up -d
 ```
 
 ### 3. Production environment
+
+#### 3.1. Admin access (loopback + SSH tunnel)
+The production compose file exposes the Market admin port on loopback only. Nginx does **not** expose admin routes.
+To reach admin endpoints from your workstation, create an SSH tunnel:
+
+```bash
+ssh -L 5090:127.0.0.1:${MARKET_ADMIN_PORT} your-host
+```
+
+Then call admin endpoints locally:
+
+```bash
+curl -i http://localhost:5090/admin/health
+```
 
 
 

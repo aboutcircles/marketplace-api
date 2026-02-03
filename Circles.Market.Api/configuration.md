@@ -77,28 +77,46 @@ export CIRCLES_SERVICE_KEY="$(openssl rand -hex 32)"
 
 ## 3) Seed Code Mappings and Pools
 
-Since CodeDispenser mapping is now DB-driven, you need to insert mappings into the database.
+Since CodeDispenser mapping is now DB-driven, you need to insert mappings via the admin API.
 
-### Create a mapping
+### Create a mapping (admin API)
 ```bash
-./scripts/set-codedisp-mapping.sh <seller_address> <sku> <pool_id>
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"tee-black","poolId":"pool-a"}' \
+  http://localhost:5090/admin/code-products
 ```
 
-### Seed a code pool
+### Seed a code pool (admin API)
 ```bash
-./scripts/seed-code-pool.sh <pool_id> <test_code>
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"tee-black","poolId":"pool-a","codes":["CODE1","CODE2"]}' \
+  http://localhost:5090/admin/code-products
 ```
+
+### Obtain an admin JWT (SIWE)
+Admin endpoints require a short-lived JWT obtained via the admin auth flow.
+
+1) Request a challenge:
+```bash
+curl -H "Content-Type: application/json" \
+  -d '{"address":"0xYourAdminAddress","chainId":100}' \
+  http://localhost:5090/admin/auth/challenge
+```
+
+2) Sign the returned `message` with your wallet, then verify:
+```bash
+curl -H "Content-Type: application/json" \
+  -d '{"challengeId":"<uuid>","signature":"0x..."}' \
+  http://localhost:5090/admin/auth/verify
+```
+
+3) Use the `token` as `Authorization: Bearer <token>`.
 
 ---
 
 ## 4) Interactive DB Access
 
-Use the helper script to jump into any of the service databases:
-```bash
-./scripts/psql.sh market
-./scripts/psql.sh codedisp
-./scripts/psql.sh odoo
-```
+Use `psql` or your favorite DB tool to connect to the service databases directly.
 
 ---
 
@@ -155,14 +173,22 @@ curl -i \
 
 ```bash
 export POSTGRES_CONNECTION="Host=localhost;Port=5432;Database=circles_market;Username=postgres;Password=postgres"
+export ODOO_ADMIN_INTERNAL_URL="http://localhost:5688"
+export CODEDISP_ADMIN_INTERNAL_URL="http://localhost:5690"
+export ADMIN_PROXY_ALLOWED_HOSTS="localhost,127.0.0.1"
 export RPC="https://your-gnosis-rpc.example"
 export IPFS_RPC_URL="http://127.0.0.1:5001/api/v0/"
 export IPFS_GATEWAY_URL="http://127.0.0.1:8080/"
 export IPFS_RPC_BEARER="local-dev"
 export MARKET_JWT_SECRET="dev-secret-change-me"
+export ADMIN_JWT_SECRET="dev-admin-secret"
+export ADMIN_ADDRESSES="0xYourAdminAddress"
+export ADMIN_AUTH_ALLOWED_DOMAINS="localhost"
+export ADMIN_PUBLIC_BASE_URL="http://localhost:5090"
 export MARKET_AUTH_ALLOWED_DOMAINS="localhost"
 export PUBLIC_BASE_URL="http://localhost:5084"
 export PORT=5084
+export MARKET_ADMIN_PORT=5090
 ```
 
 ## CodeDispenser environment template
@@ -171,6 +197,15 @@ export PORT=5084
 export POSTGRES_CONNECTION="Host=localhost;Port=5432;Database=circles_codedisp;Username=postgres;Password=postgres"
 export CODE_POOLS_DIR="$PWD/pools"
 export PORT=5680
+export CODEDISP_ADMIN_PORT=5690
+```
+
+## Odoo adapter environment template
+
+```bash
+export POSTGRES_CONNECTION="Host=localhost;Port=5432;Database=circles_odoo;Username=postgres;Password=postgres"
+export PORT=5678
+export ODOO_ADMIN_PORT=5688
 ```
 
 ---

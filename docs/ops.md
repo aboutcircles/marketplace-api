@@ -44,6 +44,33 @@ Template variables are expanded case-insensitively:
     *   **Inbound (Adapter side)**: Adapters compare the `X-Circles-Service-Key` header against the shared secret in `CIRCLES_SERVICE_KEY`.
     *   **Outbound (Market API side)**: Market API attaches the `X-Circles-Service-Key` header using `CIRCLES_SERVICE_KEY` (with optional per-adapter overrides).
 
+## Admin JWTs (single issuer)
+
+Admin JWTs are **only minted by the Market API admin app** via SIWE challenge/verify.
+Adapters (Odoo/CodeDispenser) only **validate** these JWTs on their admin ports.
+
+* Market admin auth endpoints: `http://<market-admin-host>:${MARKET_ADMIN_PORT}/admin/auth/challenge` and `/admin/auth/verify`
+* Adapter admin ports are **not** internet-facing by default; expose only on loopback if needed.
+
+Frontend integration guide (Svelte 5): see [`docs/admin-api-frontend-guide.md`](admin-api-frontend-guide.md).
+
+### Recommended admin workflow (proxy)
+
+1. **Get an admin JWT from the Market admin app** (`/admin/auth/challenge` + `/admin/auth/verify`).
+2. **Use the Market admin proxy endpoints**:
+   * `POST /admin/odoo-products`
+   * `GET /admin/odoo-products`
+   * `DELETE /admin/odoo-products/{chainId}/{seller}/{sku}`
+   * `POST /admin/code-products`
+   * `GET /admin/code-products`
+   * `DELETE /admin/code-products/{chainId}/{seller}/{sku}`
+   * `GET /admin/routes`
+   * `PUT /admin/routes`
+   * `DELETE /admin/routes/{chainId}/{seller}/{sku}`
+
+These endpoints live on the Market admin port (`5090`) and proxy to adapter admin APIs while keeping
+the public adapter ports free of `/admin/*` routes.
+
 ## Flow: Bring a CodeDispenser voucher offer live
 
 CodeDispenser is used for selling digital codes (vouchers, keys).
@@ -51,23 +78,33 @@ CodeDispenser is used for selling digital codes (vouchers, keys).
 ### 1. Choose identifiers
 Decide on your `CHAIN_ID`, `SELLER` address, and a `SKU`. You also need a `POOL_ID` (a logical grouping of codes in CodeDispenser).
 
-### 2. Seed a code pool
+### 2. Seed a code pool (admin API)
 A "pool" is a bucket of codes. You must seed it before it can sell anything.
-**Command:**
-```bash
-./scripts/ops.sh seed-pool <pool_id> <path_to_codes_file> --file
+**Endpoint (recommended):**
 ```
-*   **What it does**: Loads codes into `code_pool_codes` (and ensures `code_pools` exists).
-*   **What to check**: `SELECT count(*) FROM code_pool_codes WHERE pool_id = 'your_pool';`
+POST /admin/code-products
+```
+Example (via Market admin port):
+```bash
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"voucher-10","poolId":"pool-a","codes":["CODE1","CODE2"]}' \
+  http://localhost:${MARKET_ADMIN_PORT}/admin/code-products
+```
+*   **What it does**: Proxies to CodeDispenser admin APIs and updates `market_service_routes` in Market DB.
 
-### 3. Map (chainId, seller, sku) → pool
+### 3. Map (chainId, seller, sku) → pool (admin API)
 The adapter needs to know which pool to pull from when the Market API asks for a specific SKU.
-**Command:**
-```bash
-./scripts/ops.sh mapping-codedisp <chain_id> <seller_address> <sku> <pool_id>
+**Endpoint (recommended):**
 ```
-*   **What it does**: Writes a row to `code_mappings` in `circles_codedisp`.
-*   **What to check**: `SELECT * FROM code_mappings WHERE sku = 'your_sku';`
+POST /admin/code-products
+```
+Example (via Market admin port):
+```bash
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"voucher-10","poolId":"pool-a"}' \
+  http://localhost:${MARKET_ADMIN_PORT}/admin/code-products
+```
+*   **What it does**: Writes mapping via CodeDispenser admin API and updates Market route table.
 
 ### 4. Configure auth
 Adapters reject calls without a key. All internal service-to-service calls require header `X-Circles-Service-Key` with a shared secret.
@@ -84,13 +121,13 @@ Store the value in your secret manager (Vault, 1Password, Kubernetes secret, etc
 
 ### 5. Set offer URLs
 In the seller's catalog (on IPFS), the `inventoryFeed` and `fulfillmentEndpoint` must point to the CodeDispenser adapter.
-*   **Inventory**: `http://market-adapter-codedispenser:5680/inventory/{chainId}/{seller}/{sku}`
-*   **Fulfillment**: `http://market-adapter-codedispenser:5680/fulfill/{chainId}/{seller}`
+*   **Inventory**: `http://market-adapter-codedispenser:${MARKET_CODE_DISPENSER_PORT}/inventory/{chainId}/{seller}/{sku}`
+*   **Fulfillment**: `http://market-adapter-codedispenser:${MARKET_CODE_DISPENSER_PORT}/fulfill/{chainId}/{seller}`
 
 ### 6. Verify
 Test the inventory path directly with a header:
 ```bash
-curl -H "X-Circles-Service-Key: <your_secret>" http://localhost:5680/inventory/...
+curl -H "X-Circles-Service-Key: <your_secret>" http://localhost:${MARKET_CODE_DISPENSER_PORT}/inventory/...
 ```
 Then verify the Market API can proxy it (which proves outbound auth is working).
 
@@ -98,34 +135,45 @@ Then verify the Market API can proxy it (which proves outbound auth is working).
 
 The Odoo adapter bridges the marketplace to an Odoo ERP instance.
 
-### 1. Configure Odoo connection
+### 1. Configure Odoo connection (admin API)
 The adapter needs to know how to talk to your Odoo instance.
-**Command:**
-```bash
-./scripts/ops.sh odoo-connection <chain_id> <seller_address> <odoo_url> <odoo_db> <odoo_uid> <odoo_key> [partner_id]
+**Endpoint (recommended):**
 ```
-*   **What it does**: Writes connection details (URL, DB, credentials) to `odoo_connections` in `circles_odoo`.
-*   **What to check**: `SELECT * FROM odoo_connections WHERE seller_address = '...';`
+POST /admin/odoo-products
+```
+Example (via Market admin port):
+```bash
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100","odooUrl":"https://your.odoo","odooDb":"mydb","odooUid":7,"odooKey":"secret"}' \
+  http://localhost:${MARKET_ADMIN_PORT}/admin/odoo-products
+```
+*   **What it does**: Proxies to Odoo adapter admin APIs and updates Market route table.
 
-### 2. Configure inventory mapping
+### 2. Configure inventory mapping (admin API)
 Map your marketplace SKU to an internal Odoo Product Code.
-**Command:**
-```bash
-./scripts/ops.sh odoo-mapping <chain_id> <seller_address> <sku> <odoo_product_code>
+**Endpoint (recommended):**
 ```
-*   **What it does**: Writes to `inventory_mappings` in `circles_odoo`.
-*   **What to check**: `SELECT * FROM inventory_mappings WHERE sku = '...';`
+POST /admin/odoo-products
+```
+Example (via Market admin port):
+```bash
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100","odooUrl":"https://your.odoo","odooDb":"mydb","odooUid":7,"odooKey":"secret"}' \
+  http://localhost:${MARKET_ADMIN_PORT}/admin/odoo-products
+```
+*   **What it does**: Proxies to Odoo adapter admin APIs and updates Market route table.
 
 ### 3. Configure auth
 Use the shared `CIRCLES_SERVICE_KEY` from section **4.0** above. The Odoo adapter reads the same env var at startup.
 
 ### 4. Set offer URLs
 Point the seller's offer URLs to the Odoo adapter:
-*   **Inventory**: `http://market-adapter-odoo:5678/inventory/{chainId}/{seller}/{sku}`
-*   **Fulfillment**: `http://market-adapter-odoo:5678/fulfill/{chainId}/{seller}`
+*   **Inventory**: `http://market-adapter-odoo:${MARKET_ODOO_ADAPTER_PORT}/inventory/{chainId}/{seller}/{sku}`
+*   **Fulfillment**: `http://market-adapter-odoo:${MARKET_ODOO_ADAPTER_PORT}/fulfill/{chainId}/{seller}`
 
 ### 5. Verify
-Verify the paths via curl on the host ports (`5678`) or inside the network.
+Verify the public paths via curl on the public ports (`${MARKET_ODOO_ADAPTER_PORT}`).
+Admin APIs are on `${MARKET_ODOO_ADMIN_PORT}` and require a Market-issued admin JWT.
 
 ## Flow: Rotate a service key safely
 
@@ -134,6 +182,10 @@ Key rotation is a simple env change:
 2. Deploy/restart the services.
 
 ## Debugging (symptoms → cause → fix)
+
+### 401 Unauthorized from admin endpoints
+*   **Cause**: missing/invalid admin JWT or address not in `ADMIN_ADDRESSES`.
+*   **Fix**: ensure you create a challenge, sign it with an allowlisted address, and pass `Authorization: Bearer <ADMIN_JWT>`.
 
 ### 401 Unauthorized from adapter
 *   **Cause**: missing or wrong `CIRCLES_SERVICE_KEY`.
@@ -145,7 +197,20 @@ Key rotation is a simple env change:
 
 ### 404 Not Found from Odoo adapter
 *   **Cause**: Missing row in `inventory_mappings` or `odoo_connections`.
-*   **Fix**: Re-run `odoo-mapping` or `odoo-connection`.
+*   **Fix**: Recreate mappings via the Odoo admin API (`PUT /admin/connections` or `PUT /admin/mappings`).
+
+## Advanced: direct adapter admin APIs
+
+If you must call adapters directly, use the **admin ports** (not the public ports).
+The public adapter ports (`5678` for Odoo, `5680` for CodeDispenser) do **not** expose `/admin/*` routes.
+
+* **Odoo Adapter (admin port `${MARKET_ODOO_ADMIN_PORT}`)**
+  * `PUT http://localhost:${MARKET_ODOO_ADMIN_PORT}/admin/connections`
+  * `PUT http://localhost:${MARKET_ODOO_ADMIN_PORT}/admin/mappings`
+* **CodeDispenser Adapter (admin port `${MARKET_CODEDISP_ADMIN_PORT}`)**
+  * `POST http://localhost:${MARKET_CODEDISP_ADMIN_PORT}/admin/code-pools`
+  * `POST http://localhost:${MARKET_CODEDISP_ADMIN_PORT}/admin/code-pools/{poolId}/seed`
+  * `PUT http://localhost:${MARKET_CODEDISP_ADMIN_PORT}/admin/mappings`
 
 ## Outbound adapter auth (env-based)
 
@@ -206,15 +271,15 @@ Each service owns its own schema within the PostgreSQL instance:
 | **CodeDispenser** | `circles_codedisp` | Management of digital code pools and mappings. | `code_mappings`, `code_pools`, `code_pool_codes` |
 | **Odoo Adapter** | `circles_odoo` | Connection details and inventory mapping for Odoo ERP. | `odoo_connections`, `inventory_mappings` |
 
-## Appendix: scripts/ops.sh command reference
+## Appendix: admin endpoints quick reference
 
-| Command | Description |
-| :--- | :--- |
-| `mapping-codedisp` | Create CodeDispenser mapping |
-| `seed-pool` | Seed CodeDispenser code pool |
-| `odoo-connection` | Configure Odoo connection |
-| `odoo-mapping` | Configure Odoo inventory mapping |
-| `psql <db>` | Open PSQL shell (market|codedisp|odoo) |
-| `show [db]` | Inspect configuration |
-| `status` | High-level operator status view |
-| `doctor` | Check system health and prerequisites |
+| Service | Endpoint | Purpose |
+| :--- | :--- | :--- |
+| Market API (admin port) | `POST /admin/odoo-products` | Add/update Odoo-backed product (routes + Odoo config + mapping) |
+| Market API (admin port) | `POST /admin/code-products` | Add/update CodeDispenser-backed product (routes + pools/mappings) |
+| Market API | `GET /admin/routes` | Inspect configured routes |
+| Odoo Adapter (admin port) | `PUT /admin/connections` | Upsert Odoo connection |
+| Odoo Adapter (admin port) | `PUT /admin/mappings` | Upsert inventory mapping |
+| CodeDispenser (admin port) | `POST /admin/code-pools` | Create code pool |
+| CodeDispenser (admin port) | `POST /admin/code-pools/{poolId}/seed` | Seed codes |
+| CodeDispenser (admin port) | `PUT /admin/mappings` | Upsert code mapping |

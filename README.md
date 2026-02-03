@@ -43,15 +43,18 @@ This will:
 - Start an IPFS Kubo instance.
 - Initialize the databases (provisioning only) using the `init-db` service.
 
-Odoo adapter starts by default; it returns 404 until you configure `odoo_connections` via scripts.
+Odoo adapter starts by default; it returns 404 until you configure `odoo_connections` via the admin API.
 
 Each service creates its own schema at startup.
-Cross-service auth and initial mappings are configured via scripts in `Circles.Market/scripts/`.
+Cross-service admin configuration is done via the **Market admin API** (see docs/ops.md). Adapters only validate the Market-issued admin JWTs on their admin ports.
 
 Default ports:
 - Market API: `5084`
+- Market Admin API: `5090` (loopback by default)
 - CodeDispenser Adapter: `5680`
+- CodeDispenser Admin API: `5690` (loopback by default)
 - Odoo Adapter: `5678`
+- Odoo Admin API: `5688` (loopback by default)
 - IPFS API: `25001`
 - IPFS Gateway: `28081` (on host, if not conflicting)
 - PostgreSQL: `25433` (on host)

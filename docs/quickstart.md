@@ -19,12 +19,26 @@ This guide helps you get the Circles.Market environment up and running quickly.
    ```bash
    cp .env.example .env
    ```
-   *Note: For local development, the defaults in `.env.example` are sufficient.*
+   *Note: Admin endpoints require additional environment configuration. Ensure the
+   admin settings in `.env` are filled in before starting (at minimum:
+   `ADMIN_PUBLIC_BASE_URL`, `ADMIN_AUTH_ALLOWED_DOMAINS`, `ADMIN_ADDRESSES`,
+   `ADMIN_JWT_SECRET`).*
 
 3. **Start the services:**
    ```bash
-   docker compose up -d --build
+   cd deployment
+   ./start-dev.sh
    ```
+   `start-dev.sh` validates required configuration and starts the dev stack. For
+   more deployment details, see the [Deployment Guide](../deployment/README.md).
+
+## Proxy URLs (dev)
+
+When nginx is running in the dev stack, the proxy exposes both service and admin
+routes:
+
+- Service: `http://localhost:18080/market/...`
+- Admin (dev only): `http://localhost:18080/market/admin/...`
 
 ## What you should see
 
@@ -53,4 +67,5 @@ Expected response: `Healthy` (or a JSON object with status).
 On a fresh start:
 - **Odoo Adapter** and **CodeDispenser Adapter** will run successfully but will have empty databases.
 - Endpoints requiring configuration (e.g., trying to buy an item that isn't mapped) will return deterministic `404 Not Found` or `401 Unauthorized` errors rather than crashing the service.
-- Use `scripts/ops.sh` to configure these adapters as needed. See [Operations Guide](ops.md) for details.
+- Use the new admin APIs to configure adapters as needed. See [Operations Guide](ops.md) for details.
+- For frontend/admin-console integration details (Svelte 5), see [Admin API integration guide](admin-api-frontend-guide.md).

@@ -9,6 +9,9 @@ services:
       MARKET_API_PORT: ${MARKET_API_PORT}
       MARKET_ODOO_ADAPTER_PORT:  ${MARKET_ODOO_ADAPTER_PORT}
       MARKET_CODE_DISPENSER_PORT:  ${MARKET_CODE_DISPENSER_PORT}
+      MARKET_ADMIN_PORT: ${MARKET_ADMIN_PORT}
+      ODOO_ADMIN_PORT: ${MARKET_ODOO_ADMIN_PORT}
+      CODEDISP_ADMIN_PORT: ${MARKET_CODEDISP_ADMIN_PORT}
       CIRCLES_SERVICE_KEY: ${CIRCLES_SERVICE_KEY}
       MARKET_OUTBOUND_HEADER_NAME: ${MARKET_OUTBOUND_HEADER_NAME-}
       MARKET_ODOO_ADAPTER_ORIGIN: ${MARKET_ODOO_ADAPTER_ORIGIN-}
@@ -26,6 +29,12 @@ services:
       MARKET_JWT_SECRET: ${MARKET_JWT_SECRET}
       MARKET_AUTH_ALLOWED_DOMAINS: ${MARKET_AUTH_ALLOWED_DOMAINS}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
+      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
+      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
+      ODOO_ADMIN_INTERNAL_URL: http://market-adapter-odoo:${MARKET_ODOO_ADMIN_PORT}
+      CODEDISP_ADMIN_INTERNAL_URL: http://market-adapter-codedispenser:${MARKET_CODEDISP_ADMIN_PORT}
+      ADMIN_PROXY_ALLOWED_HOSTS: market-adapter-odoo,market-adapter-codedispenser,localhost,127.0.0.1
     env_file:
       - .env
     volumes:
@@ -34,6 +43,7 @@ services:
       - public
     ports:
       - "${MARKET_API_PORT}:${MARKET_API_PORT}"
+      - "127.0.0.1:${MARKET_ADMIN_PORT}:${MARKET_ADMIN_PORT}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,12 +90,17 @@ services:
       POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_ODOO};Username=${DB_ODOO_USER};Password=${DB_ODOO_PASSWORD}
       CIRCLES_SERVICE_KEY: ${CIRCLES_SERVICE_KEY}
       PORT: ${MARKET_ODOO_ADAPTER_PORT}
+      ODOO_ADMIN_PORT: ${MARKET_ODOO_ADMIN_PORT}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
+      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
+      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
     env_file:
       - .env
     networks:
       - public
     ports:
       - "${MARKET_ODOO_ADAPTER_PORT}:${MARKET_ODOO_ADAPTER_PORT}"
+      - "127.0.0.1:${MARKET_ODOO_ADMIN_PORT}:${MARKET_ODOO_ADMIN_PORT}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,7 +126,7 @@ services:
       market-adapter-odoo:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://market-adapter-odoo:${MARKET_ODOO_ADAPTER_PORT}/"]
+      test: ["CMD", "curl", "-fsS", "http://market-adapter-odoo:${MARKET_ODOO_ADAPTER_PORT}/health"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -133,12 +148,17 @@ services:
       CIRCLES_SERVICE_KEY: ${CIRCLES_SERVICE_KEY}
       CODE_POOLS_DIR: ${CODE_POOLS_DIR}
       PORT: ${MARKET_CODE_DISPENSER_PORT}
+      CODEDISP_ADMIN_PORT: ${MARKET_CODEDISP_ADMIN_PORT}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
+      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
+      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
     env_file:
       - .env
     networks:
       - public
     ports:
       - "${MARKET_CODE_DISPENSER_PORT}:${MARKET_CODE_DISPENSER_PORT}"
+      - "127.0.0.1:${MARKET_CODEDISP_ADMIN_PORT}:${MARKET_CODEDISP_ADMIN_PORT}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,7 +184,7 @@ services:
       market-adapter-codedispenser:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://market-adapter-codedispenser:${MARKET_CODE_DISPENSER_PORT}/"]
+      test: ["CMD", "curl", "-fsS", "http://market-adapter-codedispenser:${MARKET_CODE_DISPENSER_PORT}/health"]
       interval: 10s
       timeout: 5s
       retries: 12

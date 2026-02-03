@@ -1,9 +1,11 @@
 using System.Text.RegularExpressions;
 using Circles.Market.Adapters.CodeDispenser;
-using Npgsql;
+using Circles.Market.Adapters.CodeDispenser.Admin;
 using Circles.Market.Shared;
+using Circles.Market.Shared.Admin;
+using Npgsql;
 
-var builder = WebApplication.CreateBuilder(args);
+var publicBuilder = WebApplication.CreateBuilder(args);
 
 // Read configuration from environment only (no config section fallback)
 var postgresConn = Environment.GetEnvironmentVariable("POSTGRES_CONNECTION");
@@ -15,26 +17,26 @@ if (string.IsNullOrWhiteSpace(postgresConn))
 var poolsDir = Environment.GetEnvironmentVariable("CODE_POOLS_DIR");
 
 // Mapping is now DB-driven; no config binding
-builder.Services.AddMemoryCache();
+publicBuilder.Services.AddMemoryCache();
 
-builder.Services.AddSingleton<ICodeMappingResolver>(sp =>
+publicBuilder.Services.AddSingleton<ICodeMappingResolver>(sp =>
 {
     var cache = sp.GetService<Microsoft.Extensions.Caching.Memory.IMemoryCache>();
     return new PostgresCodeMappingResolver(postgresConn, cache);
 });
 
-builder.Services.AddSingleton<ICodeDispenserStore>(sp =>
+publicBuilder.Services.AddSingleton<ICodeDispenserStore>(sp =>
 {
     return new PostgresCodeDispenserStore(postgresConn, sp.GetRequiredService<ILogger<PostgresCodeDispenserStore>>());
 });
 
-builder.Services.AddSingleton<Circles.Market.Adapters.CodeDispenser.Auth.ITrustedCallerAuth>(sp =>
+publicBuilder.Services.AddSingleton<Circles.Market.Adapters.CodeDispenser.Auth.ITrustedCallerAuth>(sp =>
     new Circles.Market.Adapters.CodeDispenser.Auth.EnvTrustedCallerAuth(
         sp.GetRequiredService<ILogger<Circles.Market.Adapters.CodeDispenser.Auth.EnvTrustedCallerAuth>>()));
 
-builder.Services.AddLogging(o => o.AddConsole());
+publicBuilder.Services.AddLogging(o => o.AddConsole());
 
-var app = builder.Build();
+var publicApp = publicBuilder.Build();
 
 // Listen on port from ASPNETCORE_URLS or fallback to PORT or default 5680
 var urls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
@@ -44,11 +46,11 @@ if (string.IsNullOrWhiteSpace(urls))
     var portStr = Environment.GetEnvironmentVariable("PORT");
     if (!string.IsNullOrWhiteSpace(portStr) && int.TryParse(portStr, out var p) && p > 0 && p <= 65535)
         port = p;
-    app.Urls.Add($"http://0.0.0.0:{port}");
+    publicApp.Urls.Add($"http://0.0.0.0:{port}");
 }
 
 // Bootstrap schema and optional seeding (opt-in only via CODE_POOLS_DIR)
-using (var scope = app.Services.CreateScope())
+using (var scope = publicApp.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Bootstrap");
     var store = scope.ServiceProvider.GetRequiredService<ICodeDispenserStore>();
@@ -71,7 +73,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Health endpoint
-app.MapGet("/health", () => Results.Json(new { ok = true }));
+publicApp.MapGet("/health", () => Results.Json(new { ok = true }));
 
 static bool IsValidSeller(string seller)
 {
@@ -79,7 +81,7 @@ static bool IsValidSeller(string seller)
 }
 
 // Inventory feed endpoint (QuantitativeValue)
-app.MapGet("/inventory/{chainId:long}/{seller}/{sku}", async (
+publicApp.MapGet("/inventory/{chainId:long}/{seller}/{sku}", async (
     long chainId,
     string seller,
     string sku,
@@ -132,7 +134,7 @@ app.MapGet("/inventory/{chainId:long}/{seller}/{sku}", async (
 }).WithName("Inventory");
 
 // Fulfillment endpoint
-app.MapPost("/fulfill/{chainId:long}/{seller}", async (
+publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     long chainId,
     string seller,
     HttpRequest httpRequest,
@@ -318,7 +320,20 @@ app.MapPost("/fulfill/{chainId:long}/{seller}", async (
                 });
             }
         }
-        catch { /* fall through to error payload below */ }
+        catch (PostgresException ex) when (ex.SqlState == "23505")
+        {
+            log.LogWarning(ex,
+                "Assign retry unique-violation: chainId={ChainId} seller={Seller} sku={Sku} orderId={OrderId} paymentReference={PaymentReference}",
+                chainId,
+                seller.ToLowerInvariant(),
+                picked.sku,
+                req!.OrderId,
+                req.PaymentReference);
+        }
+        catch (Exception)
+        {
+            throw;
+        }
 
         return Results.Json(new Dictionary<string, object?>
         {
@@ -344,4 +359,17 @@ app.MapPost("/fulfill/{chainId:long}/{seller}", async (
     }
 });
 
-await app.RunAsync();
+var adminBuilder = WebApplication.CreateBuilder(args);
+adminBuilder.Logging.ClearProviders();
+adminBuilder.Logging.AddConsole();
+adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("CODEDISP_ADMIN_PORT", 5690)}");
+adminBuilder.Services.AddAdminJwtValidation();
+
+var adminApp = adminBuilder.Build();
+adminApp.UseAuthentication();
+adminApp.UseAuthorization();
+adminApp.MapCodeDispenserAdminApi("/admin", postgresConn);
+
+var publicTask = publicApp.RunAsync();
+var adminTask = adminApp.RunAsync();
+await Task.WhenAll(publicTask, adminTask);
