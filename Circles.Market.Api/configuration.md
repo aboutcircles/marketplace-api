@@ -114,7 +114,27 @@ curl -H "Content-Type: application/json" \
 
 ---
 
-## 4) Interactive DB Access
+## 4) Configure Odoo connections + mappings
+
+If you are using the Odoo adapter, first register the connection for `(chainId, seller)`, then map SKUs.
+
+### Create/update an Odoo connection (admin API)
+```bash
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","odooUrl":"https://your.odoo","odooDb":"mydb","odooUid":7,"odooKey":"secret"}' \
+  http://localhost:5090/admin/odoo-connections
+```
+
+### Create an Odoo product mapping (admin API)
+```bash
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100"}' \
+  http://localhost:5090/admin/odoo-products
+```
+
+---
+
+## 5) Interactive DB Access
 
 Use `psql` or your favorite DB tool to connect to the service databases directly.
 

@@ -212,5 +212,77 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
                 return Results.NotFound(new { error = "mapping not found" });
             return Results.Json(new { ok = true });
         });
+
+        group.MapGet("/products/{chainId:long}/{seller}", async (
+            HttpContext context,
+            long chainId,
+            string seller,
+            IOdooConnectionResolver resolver,
+            IHttpClientFactory httpFactory,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller)) return Results.BadRequest(new { error = "seller is required" });
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            if (!context.Request.Query.TryGetValue("limit", out var limitRaw) || !int.TryParse(limitRaw, out var limit))
+            {
+                limit = 100;
+            }
+
+            if (!context.Request.Query.TryGetValue("offset", out var offsetRaw) || !int.TryParse(offsetRaw, out var offset))
+            {
+                offset = 0;
+            }
+
+            if (limit < 1) limit = 1;
+            if (limit > 500) limit = 500;
+            if (offset < 0) offset = 0;
+
+            bool activeOnly = false;
+            if (context.Request.Query.TryGetValue("activeOnly", out var activeRaw))
+            {
+                bool.TryParse(activeRaw, out activeOnly);
+            }
+
+            bool hasCode = false;
+            if (context.Request.Query.TryGetValue("hasCode", out var codeRaw))
+            {
+                bool.TryParse(codeRaw, out hasCode);
+            }
+
+            var settings = await resolver.ResolveAsync(chainId, sellerNorm, ct);
+            if (settings == null)
+            {
+                return Results.NotFound(new { error = "No Odoo connection configured for this seller/chain." });
+            }
+
+            var http = httpFactory.CreateClient();
+            var client = new OdooClient(http, settings, loggerFactory.CreateLogger<OdooClient>());
+            await client.UpdateBaseAddressAsync(ct);
+
+            OdooProductVariantListItemDto[] items;
+            try
+            {
+                items = await client.ListProductVariantsAsync(activeOnly, hasCode, limit, offset, ct);
+            }
+            catch (Exception ex)
+            {
+                loggerFactory.CreateLogger("AdminProducts").LogError(ex, "Failed to list products for seller={Seller} chain={Chain}", sellerNorm, chainId);
+                return Results.Json(new { error = "Upstream auth failed or other error", details = ex.Message }, statusCode: 502);
+            }
+
+            var payload = new OdooProductVariantQueryResult
+            {
+                Items = items?.ToList() ?? new List<OdooProductVariantListItemDto>(),
+                Limit = limit,
+                Offset = offset,
+                ActiveOnly = activeOnly,
+                HasCode = hasCode
+            };
+
+            return Results.Json(payload);
+        });
     }
 }

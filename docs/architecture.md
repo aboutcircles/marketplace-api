@@ -57,7 +57,7 @@ To keep the system maintainable and decouple services, we follow these ownership
 | :--- | :--- |
 | JWT validation domains | `.env` (`MARKET_AUTH_ALLOWED_DOMAINS`) |
 | Market -> Adapter auth | `CIRCLES_SERVICE_KEY` shared secret (env) |
-| Seller Odoo credentials | `POST /admin/odoo-products` (Market API admin proxy) or Odoo admin `/admin/connections` |
+| Seller Odoo credentials | `PUT /admin/odoo-connections` (Market API admin proxy) or Odoo admin `/admin/connections` |
 | SKU to Odoo product mapping | `POST /admin/odoo-products` (Market API admin proxy) or Odoo admin `/admin/mappings` |
 | SKU to Code pool mapping | `POST /admin/code-products` (Market API admin proxy) or CodeDispenser admin `/admin/mappings` |
 | Digital codes in a pool | `POST /admin/code-products` (Market API admin proxy) or CodeDispenser admin `/admin/code-pools` + `/admin/code-pools/{poolId}/seed` |

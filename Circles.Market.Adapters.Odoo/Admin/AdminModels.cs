@@ -48,3 +48,12 @@ public sealed class InventoryMappingDto
     [JsonPropertyName("enabled")] public bool Enabled { get; set; }
     [JsonPropertyName("revokedAt")] public DateTimeOffset? RevokedAt { get; set; }
 }
+
+public sealed class OdooProductVariantQueryResult
+{
+    [JsonPropertyName("items")] public List<OdooProductVariantListItemDto> Items { get; set; } = new();
+    [JsonPropertyName("limit")] public int Limit { get; set; }
+    [JsonPropertyName("offset")] public int Offset { get; set; }
+    [JsonPropertyName("activeOnly")] public bool ActiveOnly { get; set; }
+    [JsonPropertyName("hasCode")] public bool HasCode { get; set; }
+}

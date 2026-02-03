@@ -71,6 +71,99 @@ public static class AdminEndpoints
 
         group.MapGet("/health", () => Results.Json(new { ok = true }));
 
+        group.MapGet("/odoo-connections", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            var odooClient = httpClientFactory.CreateClient("odoo-admin");
+            var (ok, connections) = await TryGetJsonAsync<List<AdminOdooConnectionDto>>(odooClient, "/admin/connections", bearerHeader, ct);
+            if (!ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(connections ?? new List<AdminOdooConnectionDto>());
+        });
+
+        group.MapPut("/odoo-connections", async (HttpContext ctx, AdminOdooConnectionUpsertRequest req, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.OdooUrl) ||
+                string.IsNullOrWhiteSpace(req.OdooDb) || string.IsNullOrWhiteSpace(req.OdooKey))
+            {
+                return Results.BadRequest(new { error = "seller, odooUrl, odooDb, odooKey are required" });
+            }
+
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string seller = req.Seller.Trim().ToLowerInvariant();
+            string odooUrl = req.OdooUrl.Trim();
+            string odooDb = req.OdooDb.Trim();
+            string odooKey = req.OdooKey.Trim();
+            int timeout = Math.Clamp(req.JsonrpcTimeoutMs, 1000, 300000);
+
+            var odooClient = httpClientFactory.CreateClient("odoo-admin");
+            var payload = new
+            {
+                chainId = req.ChainId,
+                seller,
+                odooUrl,
+                odooDb,
+                odooUid = req.OdooUid,
+                odooKey,
+                salePartnerId = req.SalePartnerId,
+                jsonrpcTimeoutMs = timeout,
+                fulfillInheritRequestAbort = req.FulfillInheritRequestAbort,
+                enabled = req.Enabled
+            };
+
+            using var connRequest = new HttpRequestMessage(HttpMethod.Put, "/admin/connections")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            connRequest.Headers.Authorization = bearerHeader;
+
+            using var connResponse = await odooClient.SendAsync(connRequest, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!connResponse.IsSuccessStatusCode)
+            {
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            }
+
+            return Results.Json(new AdminOdooConnectionDto
+            {
+                ChainId = req.ChainId,
+                Seller = seller,
+                OdooUrl = odooUrl,
+                OdooDb = odooDb,
+                OdooUid = req.OdooUid,
+                SalePartnerId = req.SalePartnerId,
+                JsonrpcTimeoutMs = timeout,
+                FulfillInheritRequestAbort = req.FulfillInheritRequestAbort,
+                Enabled = req.Enabled,
+                RevokedAt = req.Enabled ? null : DateTimeOffset.UtcNow
+            });
+        });
+
+        group.MapDelete("/odoo-connections/{chainId:long}/{seller}", async (HttpContext ctx, long chainId, string seller, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller)) return Results.BadRequest(new { error = "seller is required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+
+            var odooClient = httpClientFactory.CreateClient("odoo-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Delete,
+                $"/admin/connections/{chainId}/{Uri.EscapeDataString(sellerNorm)}");
+            req.Headers.Authorization = bearerHeader;
+            using var resp = await odooClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return Results.NotFound(new { error = "connection not found" });
+            if (!resp.IsSuccessStatusCode)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            return Results.Json(new { ok = true });
+        });
+
         group.MapGet("/routes", async (CancellationToken ct) =>
         {
             var result = new List<AdminRouteDto>();
@@ -178,6 +271,72 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             return Results.Json(mappings ?? new List<AdminOdooProductDto>());
         });
 
+        group.MapGet("/odoo-product-catalog", async (HttpContext ctx, long chainId, string seller, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller)) return Results.BadRequest(new { error = "seller is required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            int limit = 100;
+            if (ctx.Request.Query.TryGetValue("limit", out var limitRaw) && int.TryParse(limitRaw, out var parsedLimit))
+            {
+                limit = parsedLimit;
+            }
+
+            int offset = 0;
+            if (ctx.Request.Query.TryGetValue("offset", out var offsetRaw) && int.TryParse(offsetRaw, out var parsedOffset))
+            {
+                offset = parsedOffset;
+            }
+
+            bool activeOnly = false;
+            if (ctx.Request.Query.TryGetValue("activeOnly", out var activeRaw))
+            {
+                bool.TryParse(activeRaw, out activeOnly);
+            }
+
+            bool hasCode = false;
+            if (ctx.Request.Query.TryGetValue("hasCode", out var codeRaw))
+            {
+                bool.TryParse(codeRaw, out hasCode);
+            }
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+
+            var odooClient = httpClientFactory.CreateClient("odoo-admin");
+            var query = new Dictionary<string, string>
+            {
+                ["limit"] = limit.ToString(),
+                ["offset"] = offset.ToString(),
+                ["activeOnly"] = activeOnly.ToString().ToLowerInvariant(),
+                ["hasCode"] = hasCode.ToString().ToLowerInvariant()
+            };
+
+            string queryString = string.Join("&", query.Select(kv => $"{kv.Key}={Uri.EscapeDataString(kv.Value)}"));
+            string path = $"/admin/products/{chainId}/{Uri.EscapeDataString(sellerNorm)}?{queryString}";
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, path);
+            req.Headers.Authorization = bearerHeader;
+
+            using var response = await odooClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            var payload = await JsonSerializer.DeserializeAsync<AdminOdooProductVariantQueryResult>(stream, JsonOptions, ct);
+            return Results.Json(payload ?? new AdminOdooProductVariantQueryResult
+            {
+                Items = new List<AdminOdooProductVariantDto>(),
+                Limit = limit,
+                Offset = offset,
+                ActiveOnly = activeOnly,
+                HasCode = hasCode
+            });
+        });
+
         group.MapGet("/code-products", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
         {
             if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
@@ -280,8 +439,6 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
             if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku) || string.IsNullOrWhiteSpace(req.OdooProductCode))
                 return Results.BadRequest(new { error = "seller, sku, odooProductCode are required" });
-            if (string.IsNullOrWhiteSpace(req.OdooUrl) || string.IsNullOrWhiteSpace(req.OdooDb) || string.IsNullOrWhiteSpace(req.OdooKey))
-                return Results.BadRequest(new { error = "odooUrl, odooDb, odooKey are required" });
 
             if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
                 return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
@@ -289,37 +446,18 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             string seller = req.Seller.Trim().ToLowerInvariant();
             string sku = req.Sku.Trim().ToLowerInvariant();
             string code = req.OdooProductCode.Trim();
-            string odooUrl = req.OdooUrl.Trim();
-            string odooDb = req.OdooDb.Trim();
-            string odooKey = req.OdooKey.Trim();
-            int timeout = Math.Clamp(req.JsonrpcTimeoutMs, 1000, 300000);
 
             var odooClient = httpClientFactory.CreateClient("odoo-admin");
 
-            var connPayload = new
+            var (connOk, connections) = await TryGetJsonAsync<List<AdminOdooConnectionDto>>(odooClient, "/admin/connections", bearerHeader, ct);
+            if (!connOk) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            bool hasConnection = connections?.Any(c => c.ChainId == req.ChainId
+                                                      && string.Equals(c.Seller, seller, StringComparison.OrdinalIgnoreCase)
+                                                      && c.Enabled
+                                                      && c.RevokedAt == null) ?? false;
+            if (!hasConnection)
             {
-                chainId = req.ChainId,
-                seller,
-                odooUrl,
-                odooDb,
-                odooUid = req.OdooUid,
-                odooKey,
-                salePartnerId = req.SalePartnerId,
-                jsonrpcTimeoutMs = timeout,
-                fulfillInheritRequestAbort = req.FulfillInheritRequestAbort,
-                enabled = req.Enabled
-            };
-
-            using var connRequest = new HttpRequestMessage(HttpMethod.Put, "/admin/connections")
-            {
-                Content = new StringContent(JsonSerializer.Serialize(connPayload), Encoding.UTF8, "application/json")
-            };
-            connRequest.Headers.Authorization = bearerHeader;
-
-            using var connResponse = await odooClient.SendAsync(connRequest, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!connResponse.IsSuccessStatusCode)
-            {
-                return Results.StatusCode(StatusCodes.Status502BadGateway);
+                return Results.BadRequest(new { error = "no odoo connection configured for this chainId/seller" });
             }
 
             var mappingPayload = new

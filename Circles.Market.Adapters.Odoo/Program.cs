@@ -453,7 +453,15 @@ var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
 adminBuilder.Logging.AddConsole();
 adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("ODOO_ADMIN_PORT", 5688)}");
-adminBuilder.Services.AddAdminJwtValidation();
+adminBuilder.Services.AddHttpClient();
+adminBuilder.Services.AddSingleton<IOdooConnectionResolver>(sp =>
+    new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
+adminBuilder.Services.AddAdminJwtValidation(new SiweAuthOptions
+{
+    JwtSecretEnv = "ADMIN_JWT_SECRET",
+    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
+    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE"
+}, AdminAuthConstants.Scheme);
 
 var adminApp = adminBuilder.Build();
 adminApp.UseAuthentication();

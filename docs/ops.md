@@ -61,6 +61,9 @@ Frontend integration guide (Svelte 5): see [`docs/admin-api-frontend-guide.md`](
    * `POST /admin/odoo-products`
    * `GET /admin/odoo-products`
    * `DELETE /admin/odoo-products/{chainId}/{seller}/{sku}`
+   * `GET /admin/odoo-connections`
+   * `PUT /admin/odoo-connections`
+   * `DELETE /admin/odoo-connections/{chainId}/{seller}`
    * `POST /admin/code-products`
    * `GET /admin/code-products`
    * `DELETE /admin/code-products/{chainId}/{seller}/{sku}`
@@ -139,15 +142,15 @@ The Odoo adapter bridges the marketplace to an Odoo ERP instance.
 The adapter needs to know how to talk to your Odoo instance.
 **Endpoint (recommended):**
 ```
-POST /admin/odoo-products
+PUT /admin/odoo-connections
 ```
 Example (via Market admin port):
 ```bash
 curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
-  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100","odooUrl":"https://your.odoo","odooDb":"mydb","odooUid":7,"odooKey":"secret"}' \
-  http://localhost:${MARKET_ADMIN_PORT}/admin/odoo-products
+  -d '{"chainId":100,"seller":"0xabc...","odooUrl":"https://your.odoo","odooDb":"mydb","odooUid":7,"odooKey":"secret"}' \
+  http://localhost:${MARKET_ADMIN_PORT}/admin/odoo-connections
 ```
-*   **What it does**: Proxies to Odoo adapter admin APIs and updates Market route table.
+*   **What it does**: Proxies to Odoo adapter admin APIs and stores connection details.
 
 ### 2. Configure inventory mapping (admin API)
 Map your marketplace SKU to an internal Odoo Product Code.
@@ -158,10 +161,10 @@ POST /admin/odoo-products
 Example (via Market admin port):
 ```bash
 curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
-  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100","odooUrl":"https://your.odoo","odooDb":"mydb","odooUid":7,"odooKey":"secret"}' \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100"}' \
   http://localhost:${MARKET_ADMIN_PORT}/admin/odoo-products
 ```
-*   **What it does**: Proxies to Odoo adapter admin APIs and updates Market route table.
+*   **What it does**: Proxies to Odoo adapter admin APIs and updates the Market route table.
 
 ### 3. Configure auth
 Use the shared `CIRCLES_SERVICE_KEY` from section **4.0** above. The Odoo adapter reads the same env var at startup.
@@ -275,7 +278,8 @@ Each service owns its own schema within the PostgreSQL instance:
 
 | Service | Endpoint | Purpose |
 | :--- | :--- | :--- |
-| Market API (admin port) | `POST /admin/odoo-products` | Add/update Odoo-backed product (routes + Odoo config + mapping) |
+| Market API (admin port) | `PUT /admin/odoo-connections` | Add/update Odoo connection (routes read these for inventory/fulfillment) |
+| Market API (admin port) | `POST /admin/odoo-products` | Add/update Odoo-backed product (routes + mapping) |
 | Market API (admin port) | `POST /admin/code-products` | Add/update CodeDispenser-backed product (routes + pools/mappings) |
 | Market API | `GET /admin/routes` | Inspect configured routes |
 | Odoo Adapter (admin port) | `PUT /admin/connections` | Upsert Odoo connection |

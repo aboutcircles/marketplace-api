@@ -364,7 +364,12 @@ var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
 adminBuilder.Logging.AddConsole();
 adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("CODEDISP_ADMIN_PORT", 5690)}");
-adminBuilder.Services.AddAdminJwtValidation();
+adminBuilder.Services.AddAdminJwtValidation(new SiweAuthOptions
+{
+    JwtSecretEnv = "ADMIN_JWT_SECRET",
+    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
+    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE"
+}, AdminAuthConstants.Scheme);
 
 var adminApp = adminBuilder.Build();
 adminApp.UseAuthentication();

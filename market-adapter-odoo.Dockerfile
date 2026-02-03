@@ -7,11 +7,13 @@ COPY Directory.Build.props* ./
 # Copy project file first for better layer caching
 COPY Circles.Market.Adapters.Odoo/Circles.Market.Adapters.Odoo.csproj Circles.Market.Adapters.Odoo/
 COPY Circles.Market.Shared/Circles.Market.Shared.csproj Circles.Market.Shared/
+COPY Circles.Market.Auth.Siwe/Circles.Market.Auth.Siwe.csproj Circles.Market.Auth.Siwe/
 RUN dotnet restore Circles.Market.Adapters.Odoo/Circles.Market.Adapters.Odoo.csproj
 
 # Copy the rest and publish only the adapter project
 COPY Circles.Market.Adapters.Odoo/ Circles.Market.Adapters.Odoo/
 COPY Circles.Market.Shared/ Circles.Market.Shared/
+COPY Circles.Market.Auth.Siwe/ Circles.Market.Auth.Siwe/
 RUN dotnet publish Circles.Market.Adapters.Odoo/Circles.Market.Adapters.Odoo.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
