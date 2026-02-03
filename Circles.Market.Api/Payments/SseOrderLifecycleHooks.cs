@@ -1,5 +1,6 @@
 using Circles.Market.Api.Cart;
 using Circles.Market.Api.Fulfillment;
+using Circles.Market.Api.Routing;
 
 namespace Circles.Market.Api.Payments;
 
@@ -8,17 +9,20 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
     private readonly IOrderStatusEventBus _bus;
     private readonly IOrderStore _orders;
     private readonly IOrderFulfillmentClient _fulfillment;
+    private readonly IMarketRouteStore _routes;
     private readonly ILogger<SseOrderLifecycleHooks> _log;
 
     public SseOrderLifecycleHooks(
         IOrderStatusEventBus bus,
         IOrderStore orders,
         IOrderFulfillmentClient fulfillment,
+        IMarketRouteStore routes,
         ILogger<SseOrderLifecycleHooks> log)
     {
         _bus = bus ?? throw new ArgumentNullException(nameof(bus));
         _orders = orders ?? throw new ArgumentNullException(nameof(orders));
         _fulfillment = fulfillment ?? throw new ArgumentNullException(nameof(fulfillment));
+        _routes = routes ?? throw new ArgumentNullException(nameof(routes));
         _log = log ?? throw new ArgumentNullException(nameof(log));
     }
 
@@ -109,18 +113,51 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
                 string orderId = snapshot.OrderNumber;
                 string payRef = snapshot.PaymentReference ?? paymentReference;
 
-                // Iterate accepted offers and trigger fulfillment if configured
-                foreach (var offer in snapshot.AcceptedOffer)
-                {
-                    var endpoint = offer.CirclesFulfillmentEndpoint;
-                    if (string.IsNullOrWhiteSpace(endpoint)) continue;
+                int offers = snapshot.AcceptedOffer?.Count ?? 0;
+                int items = snapshot.OrderedItem?.Count ?? 0;
+                int n = Math.Min(offers, items);
 
-                    string effectiveTrigger = string.IsNullOrWhiteSpace(offer.CirclesFulfillmentTrigger) 
-                        ? "finalized" 
+                for (int i = 0; i < n; i++)
+                {
+                    var offer = snapshot.AcceptedOffer![i];
+                    var item = snapshot.OrderedItem![i];
+
+                    string? sellerId = offer.Seller?.Id;
+                    if (!TryParseEip155SellerId(sellerId, out long sellerChain, out string sellerAddr))
+                    {
+                        continue;
+                    }
+
+                    string? sku = item.OrderedItem?.Sku;
+                    if (string.IsNullOrWhiteSpace(sku))
+                    {
+                        continue;
+                    }
+
+                    string skuNorm = sku.Trim().ToLowerInvariant();
+
+                    var endpoint = await _routes.TryResolveUpstreamAsync(
+                        sellerChain,
+                        sellerAddr,
+                        skuNorm,
+                        MarketServiceKind.Fulfillment,
+                        ct);
+
+                    if (string.IsNullOrWhiteSpace(endpoint))
+                    {
+                        _log.LogWarning("Fulfillment skipped: no configured endpoint for chain={Chain} seller={Seller} sku={Sku}",
+                            sellerChain, sellerAddr, skuNorm);
+                        continue;
+                    }
+
+                    string effectiveTrigger = string.IsNullOrWhiteSpace(offer.CirclesFulfillmentTrigger)
+                        ? "finalized"
                         : offer.CirclesFulfillmentTrigger.Trim().ToLowerInvariant();
 
                     if (!string.Equals(effectiveTrigger, trigger, StringComparison.OrdinalIgnoreCase))
+                    {
                         continue;
+                    }
 
                     try
                     {
@@ -138,5 +175,40 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
         {
             _log.LogError(ex, "RunFulfillmentAsync failed for ref={Ref} trigger={Trigger}", paymentReference, trigger);
         }
+    }
+
+    private static bool TryParseEip155SellerId(string? id, out long chainId, out string addr)
+    {
+        chainId = 0;
+        addr = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        var parts = id.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        bool partsOk = parts.Length == 3;
+        if (!partsOk)
+        {
+            return false;
+        }
+
+        bool prefixOk = string.Equals(parts[0], "eip155", StringComparison.OrdinalIgnoreCase);
+        bool chainOk = long.TryParse(parts[1], out var parsedChain);
+        if (!prefixOk || !chainOk)
+        {
+            return false;
+        }
+
+        string parsedAddr = parts[2].Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(parsedAddr))
+        {
+            return false;
+        }
+
+        chainId = parsedChain;
+        addr = parsedAddr;
+        return true;
     }
 }

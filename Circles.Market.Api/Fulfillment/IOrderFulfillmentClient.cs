@@ -55,7 +55,7 @@ public sealed class HttpOrderFulfillmentClient : IOrderFulfillmentClient
 
         if (header == null)
         {
-            _log.LogWarning("FulfillAsync: No outbound auth header found for target {Uri} (Seller={Seller}, Chain={Chain}). Falling back to public request.", 
+            _log.LogWarning("FulfillAsync: No outbound auth header found for target {Uri} (Seller={Seller}, Chain={Chain}). Falling back to public request.",
                 uri, seller ?? "_", chain);
             if (await OutboundGuards.IsPrivateOrLocalTargetAsync(uri, timeoutCts.Token))
             {
@@ -95,13 +95,14 @@ public sealed class HttpOrderFulfillmentClient : IOrderFulfillmentClient
         HttpResponseMessage resp;
         if (header != null)
         {
-            var req = createReq(uri);
+            using var req = createReq(uri);
             req.Headers.TryAddWithoutValidation(header.Value.headerName, header.Value.apiKey);
             resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
         }
         else
         {
-            resp = await OutboundGuards.SendWithRedirectsAsync(client, createReq(uri), OutboundGuards.GetMaxRedirects(), createReq, timeoutCts.Token);
+            using var initialReq = createReq(uri);
+            resp = await OutboundGuards.SendWithRedirectsAsync(client, initialReq, OutboundGuards.GetMaxRedirects(), createReq, timeoutCts.Token);
         }
 
         using (resp)

@@ -1,11 +1,13 @@
 using System.Text.RegularExpressions;
 using Circles.Market.Adapters.Odoo;
+using Circles.Market.Adapters.Odoo.Admin;
 using Circles.Market.Adapters.Odoo.Auth;
 using Circles.Market.Adapters.Odoo.Db;
+using Circles.Market.Auth.Siwe;
 using Circles.Market.Shared;
-using Circles.Profiles.Models;
+using Circles.Market.Shared.Admin;
 
-var builder = WebApplication.CreateBuilder(args);
+var publicBuilder = WebApplication.CreateBuilder(args);
 
 // Read DB connection from environment only
 string? connString = Environment.GetEnvironmentVariable("POSTGRES_CONNECTION");
@@ -16,28 +18,29 @@ if (string.IsNullOrWhiteSpace(connString))
 
 // All configuration is now DB-driven via odoo_connections, inventory_mappings tables
 
-builder.Services.AddSingleton<OdooDbBootstrapper>(sp =>
+publicBuilder.Services.AddSingleton<OdooDbBootstrapper>(sp =>
     new OdooDbBootstrapper(connString, sp.GetRequiredService<ILogger<OdooDbBootstrapper>>()));
 
 // DB-backed components
-builder.Services.AddSingleton<ITrustedCallerAuth>(sp => new PostgresTrustedCallerAuth(connString, sp.GetRequiredService<ILogger<PostgresTrustedCallerAuth>>()));
-builder.Services.AddSingleton<IInventoryMappingResolver>(sp => new PostgresInventoryMappingResolver(connString, sp.GetRequiredService<ILogger<PostgresInventoryMappingResolver>>()));
-builder.Services.AddSingleton<IOdooConnectionResolver>(sp => new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
+publicBuilder.Services.AddSingleton<ITrustedCallerAuth>(sp =>
+    new EnvTrustedCallerAuth(sp.GetRequiredService<ILogger<EnvTrustedCallerAuth>>()));
+publicBuilder.Services.AddSingleton<IInventoryMappingResolver>(sp => new PostgresInventoryMappingResolver(connString, sp.GetRequiredService<ILogger<PostgresInventoryMappingResolver>>()));
+publicBuilder.Services.AddSingleton<IOdooConnectionResolver>(sp => new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
 
-builder.Services.AddSingleton<IFulfillmentRunStore>(sp =>
+publicBuilder.Services.AddSingleton<IFulfillmentRunStore>(sp =>
     new PostgresFulfillmentRunStore(
         connString,
         sp.GetRequiredService<ILogger<PostgresFulfillmentRunStore>>()));
 
 // Typed HttpClient for Odoo JSON-RPC.
-builder.Services.AddHttpClient<OdooClient>();
+publicBuilder.Services.AddHttpClient<OdooClient>();
 
-builder.Services.AddMemoryCache();
+publicBuilder.Services.AddMemoryCache();
 
-var app = builder.Build();
+var publicApp = publicBuilder.Build();
 
 // Run schema bootstrap
-using (var scope = app.Services.CreateScope())
+using (var scope = publicApp.Services.CreateScope())
 {
     var bootstrapper = scope.ServiceProvider.GetRequiredService<OdooDbBootstrapper>();
     await bootstrapper.EnsureSchemaAsync();
@@ -87,11 +90,11 @@ if (!hasUrls)
     {
         port = 5678;
     }
-    app.Urls.Add($"http://0.0.0.0:{port}");
+    publicApp.Urls.Add($"http://0.0.0.0:{port}");
 }
 
 // Health endpoint for orchestration
-app.MapGet("/health", () => Results.Json(new { ok = true }));
+publicApp.MapGet("/health", () => Results.Json(new { ok = true }));
 
 // ---------------------------------------------------------------------
 // GET /inventory
@@ -99,7 +102,7 @@ app.MapGet("/health", () => Results.Json(new { ok = true }));
 // mapped Odoo product.
 // Response shape matches product-catalog §4.2 inventoryFeed.
 // ---------------------------------------------------------------------
-app.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
+publicApp.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
         HttpContext context,
         long chainId,
         string seller,
@@ -170,7 +173,7 @@ app.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
 // GET /availability
 // Returns an ItemAvailability JSON object (schema:InStock or schema:OutOfStock).
 // ---------------------------------------------------------------------
-app.MapGet("/availability/{chainId}/{seller}/{sku}", async (
+publicApp.MapGet("/availability/{chainId}/{seller}/{sku}", async (
         HttpContext context,
         long chainId,
         string seller,
@@ -238,7 +241,7 @@ static bool IsValidSeller(string seller)
 // POST /fulfill
 // Creates and confirms an Odoo sale.order via JSON-RPC for mapped products.
 // ---------------------------------------------------------------------
-app.MapPost("/fulfill/{chainId:long}/{seller}", async (
+publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         long chainId,
         string seller,
         HttpContext context,
@@ -446,4 +449,25 @@ app.MapPost("/fulfill/{chainId:long}/{seller}", async (
         }
     });
 
-await app.RunAsync();
+var adminBuilder = WebApplication.CreateBuilder(args);
+adminBuilder.Logging.ClearProviders();
+adminBuilder.Logging.AddConsole();
+adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("ODOO_ADMIN_PORT", 5688)}");
+adminBuilder.Services.AddHttpClient();
+adminBuilder.Services.AddSingleton<IOdooConnectionResolver>(sp =>
+    new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
+adminBuilder.Services.AddAdminJwtValidation(new SiweAuthOptions
+{
+    JwtSecretEnv = "ADMIN_JWT_SECRET",
+    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
+    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE"
+}, AdminAuthConstants.Scheme);
+
+var adminApp = adminBuilder.Build();
+adminApp.UseAuthentication();
+adminApp.UseAuthorization();
+adminApp.MapOdooAdminApi("/admin", connString);
+
+var publicTask = publicApp.RunAsync();
+var adminTask = adminApp.RunAsync();
+await Task.WhenAll(publicTask, adminTask);

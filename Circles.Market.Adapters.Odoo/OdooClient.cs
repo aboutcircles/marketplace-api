@@ -622,6 +622,49 @@ public class OdooClient
         return records[0].Id;
     }
 
+    public Task<OdooProductVariantListItemDto[]> ListProductVariantsAsync(
+        bool? activeOnly,
+        bool? hasCode,
+        int? limit,
+        int offset,
+        CancellationToken cancellationToken = default)
+    {
+        var domainItems = new List<object>();
+
+        if (activeOnly == true)
+        {
+            domainItems.Add(new object[] { "active", "=", true });
+        }
+
+        if (hasCode == true)
+        {
+            domainItems.Add(new object[] { "default_code", "!=", false });
+        }
+
+        object[] domain = domainItems.Count == 0
+            ? Array.Empty<object>()
+            : domainItems.ToArray();
+
+        string[] fields =
+        {
+            "id",
+            "display_name",
+            "default_code",
+            "product_tmpl_id",
+            "barcode",
+            "qty_available",
+            "active"
+        };
+
+        return SearchReadAsync<OdooProductVariantListItemDto>(
+            "product.product",
+            domain,
+            fields,
+            limit,
+            offset,
+            cancellationToken);
+    }
+
     public async Task<OdooSaleOrderReadDto> ReadSaleOrderAsync(int orderId, CancellationToken cancellationToken = default)
     {
         if (orderId <= 0) throw new ArgumentOutOfRangeException(nameof(orderId));

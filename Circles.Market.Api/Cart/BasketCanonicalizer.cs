@@ -1,4 +1,5 @@
 using Circles.Market.Api.Inventory;
+using Circles.Market.Api.Routing;
 using Circles.Profiles.Models.Market;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -8,6 +9,7 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
 {
     private readonly IProductResolver _resolver;
     private readonly ILiveInventoryClient _inventoryClient;
+    private readonly IMarketRouteStore _routes;
     private readonly IMemoryCache _cache;
     private readonly Microsoft.Extensions.Logging.ILogger<BasketCanonicalizer>? _logger;
 
@@ -16,10 +18,16 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
 
     private sealed record InventoryState(string? InventoryFeed, long RequestedQuantity, long? Available);
 
-    public BasketCanonicalizer(IProductResolver resolver, ILiveInventoryClient inventoryClient, IMemoryCache cache, Microsoft.Extensions.Logging.ILogger<BasketCanonicalizer>? logger = null)
+    public BasketCanonicalizer(
+        IProductResolver resolver,
+        ILiveInventoryClient inventoryClient,
+        IMarketRouteStore routes,
+        IMemoryCache cache,
+        Microsoft.Extensions.Logging.ILogger<BasketCanonicalizer>? logger = null)
     {
         _resolver = resolver;
         _inventoryClient = inventoryClient;
+        _routes = routes ?? throw new ArgumentNullException(nameof(routes));
         _cache = cache;
         _logger = logger;
     }
@@ -121,11 +129,26 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
                 throw new InvalidOperationException($"Product {sku} for seller={seller} has no offers");
             }
 
+            // Look up DB config for routing
+            string skuCfg = product.Sku.Trim().ToLowerInvariant();
+            var cfg = await _routes.TryGetAsync(basket.ChainId, seller, skuCfg, ct);
+            if (cfg is null || !cfg.IsConfigured)
+            {
+                throw new InvalidOperationException(
+                    $"Product not configured for seller={seller}, sku={skuCfg}, chainId={basket.ChainId}");
+            }
+
             // Inventory enforcement
-            var key = (seller, product.Sku);
+            var skuKey = product.Sku.Trim().ToLowerInvariant();
+            var key = (seller, skuKey);
             perProduct.TryGetValue(key, out var state);
 
-            var invFeed = offer.CirclesInventoryFeed;
+            var invFeed = await _routes.TryResolveUpstreamAsync(
+                basket.ChainId,
+                seller,
+                skuCfg,
+                MarketServiceKind.Inventory,
+                ct);
             long qty = line.OrderQuantity <= 0 ? 1 : line.OrderQuantity;
             // Normalize quantity defensively so downstream totals and snapshots never see <= 0
             line.OrderQuantity = (int)qty;
@@ -159,9 +182,8 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
                     $"Requested quantity {state.RequestedQuantity} for seller={seller}, sku={product.Sku} exceeds inventory {avail}.");
             }
 
-            // Determine if this is a one-off offer (no availabilityFeed and no inventoryFeed)
-            bool isOneOff = string.IsNullOrWhiteSpace(offer.CirclesInventoryFeed) &&
-                            string.IsNullOrWhiteSpace(offer.CirclesAvailabilityFeed);
+            // Determine if this is a one-off offer based on DB config
+            bool isOneOff = cfg.IsOneOff;
 
             // Enforce quantity = 1 for one-off items
             if (isOneOff && state.RequestedQuantity > 1)
@@ -190,8 +212,8 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
                 },
                 AvailableDeliveryMethod = offer.AvailableDeliveryMethod?.ToList(),
                 RequiredSlots = offer.RequiredSlots?.ToList(),
-                // Propagate fulfillment hints from the source offer so they make it into the order snapshot
-                CirclesFulfillmentEndpoint = offer.CirclesFulfillmentEndpoint,
+                // Fulfillment endpoint is resolved from DB at fulfillment time
+                CirclesFulfillmentEndpoint = null,
                 CirclesFulfillmentTrigger = offer.CirclesFulfillmentTrigger,
                 IsOneOff = isOneOff
             };
@@ -230,7 +252,8 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
                 },
                 AvailableDeliveryMethod = s.OfferSnapshot.AvailableDeliveryMethod?.ToList(),
                 RequiredSlots = s.OfferSnapshot.RequiredSlots?.ToList(),
-                CirclesFulfillmentEndpoint = s.OfferSnapshot.CirclesFulfillmentEndpoint,
+                // Fulfillment endpoint is resolved from DB at fulfillment time
+                CirclesFulfillmentEndpoint = null,
                 CirclesFulfillmentTrigger = s.OfferSnapshot.CirclesFulfillmentTrigger,
                 IsOneOff = s.OfferSnapshot.IsOneOff
             };
@@ -284,7 +307,8 @@ public sealed class BasketCanonicalizer : IBasketCanonicalizer
                     },
                     AvailableDeliveryMethod = it.OfferSnapshot.AvailableDeliveryMethod?.ToList(),
                     RequiredSlots = it.OfferSnapshot.RequiredSlots?.ToList(),
-                    CirclesFulfillmentEndpoint = it.OfferSnapshot.CirclesFulfillmentEndpoint,
+                    // Fulfillment endpoint is resolved from DB at fulfillment time
+                    CirclesFulfillmentEndpoint = null,
                     CirclesFulfillmentTrigger = it.OfferSnapshot.CirclesFulfillmentTrigger,
                     IsOneOff = it.OfferSnapshot.IsOneOff
                 }

@@ -555,7 +555,7 @@ public static class CartEndpoints
     }
 
     // GET /orders/by-buyer (authorized)
-    private static IResult GetOrdersByBuyer(HttpContext ctx, IOrderAccessService access)
+    private static async Task<IResult> GetOrdersByBuyer(HttpContext ctx, IOrderAccessService access)
     {
         string? addr = ctx.User.FindFirst("addr")?.Value;
         string? chainStr = ctx.User.FindFirst("chainId")?.Value;
@@ -569,12 +569,12 @@ public static class CartEndpoints
         if (int.TryParse(ctx.Request.Query["page"], out var p) && p > 0) page = p;
         if (int.TryParse(ctx.Request.Query["pageSize"], out var ps)) pageSize = Math.Clamp(ps, MarketConstants.Defaults.PageSizeMin, MarketConstants.Defaults.PageSizeMax);
 
-        var items = access.GetOrdersForBuyerAsync(addr, chainId, page, pageSize).GetAwaiter().GetResult();
+        var items = await access.GetOrdersForBuyerAsync(addr, chainId, page, pageSize);
         return ResultsExtensions.JsonLd(new { items });
     }
 
     // GET /orders/{orderId} (authorized)
-    private static IResult GetOrderById(string orderId, HttpContext ctx, IOrderAccessService access)
+    private static async Task<IResult> GetOrderById(string orderId, HttpContext ctx, IOrderAccessService access)
     {
         string pattern = "^" + Regex.Escape(MarketConstants.IdPrefixes.Order) + "[0-9A-F]{32}$";
         if (!Regex.IsMatch(orderId, pattern, RegexOptions.CultureInvariant))
@@ -587,14 +587,14 @@ public static class CartEndpoints
             return Results.StatusCode(StatusCodes.Status401Unauthorized);
         }
 
-        var order = access.GetOrderForBuyerAsync(orderId, addr!, chainId).GetAwaiter().GetResult();
+        var order = await access.GetOrderForBuyerAsync(orderId, addr!, chainId);
         return order is null
             ? Results.StatusCode(StatusCodes.Status404NotFound)
             : ResultsExtensions.JsonLd(order);
     }
 
     // SELLER handlers
-    private static IResult GetOrdersBySeller(HttpContext ctx, IOrderAccessService access)
+    private static async Task<IResult> GetOrdersBySeller(HttpContext ctx, IOrderAccessService access)
     {
         string? addr = ctx.User.FindFirst("addr")?.Value;
         string? chainStr = ctx.User.FindFirst("chainId")?.Value;
@@ -608,11 +608,11 @@ public static class CartEndpoints
         if (int.TryParse(ctx.Request.Query["page"], out var p) && p > 0) page = p;
         if (int.TryParse(ctx.Request.Query["pageSize"], out var ps)) pageSize = Math.Clamp(ps, MarketConstants.Defaults.PageSizeMin, MarketConstants.Defaults.PageSizeMax);
 
-        var items = access.GetOrdersForSellerAsync(addr, chainId, page, pageSize).GetAwaiter().GetResult();
+        var items = await access.GetOrdersForSellerAsync(addr, chainId, page, pageSize);
         return ResultsExtensions.JsonLd(new { items });
     }
 
-    private static IResult GetOrderByIdAsSeller(string orderId, HttpContext ctx, IOrderAccessService access)
+    private static async Task<IResult> GetOrderByIdAsSeller(string orderId, HttpContext ctx, IOrderAccessService access)
     {
         string pattern = "^" + Regex.Escape(MarketConstants.IdPrefixes.Order) + "[0-9A-F]{32}$";
         if (!Regex.IsMatch(orderId, pattern, RegexOptions.CultureInvariant))
@@ -625,14 +625,14 @@ public static class CartEndpoints
             return Results.StatusCode(StatusCodes.Status401Unauthorized);
         }
 
-        var dto = access.GetOrderForSellerAsync(orderId, addr!, chainId).GetAwaiter().GetResult();
+        var dto = await access.GetOrderForSellerAsync(orderId, addr!, chainId);
         return dto is null
             ? Results.StatusCode(StatusCodes.Status404NotFound)
             : ResultsExtensions.JsonLd(dto);
     }
 
     // GET /orders/{orderId}/status-history (authorized)
-    private static IResult GetOrderStatusHistory(string orderId, HttpContext ctx, IOrderAccessService access)
+    private static async Task<IResult> GetOrderStatusHistory(string orderId, HttpContext ctx, IOrderAccessService access)
     {
         string pattern = "^" + Regex.Escape(MarketConstants.IdPrefixes.Order) + "[0-9A-F]{32}$";
         if (!Regex.IsMatch(orderId, pattern, RegexOptions.CultureInvariant))
@@ -645,8 +645,7 @@ public static class CartEndpoints
             return Results.StatusCode(StatusCodes.Status401Unauthorized);
         }
 
-        var history = access.GetOrderStatusHistoryForBuyerAsync(orderId, addr!, chainId, ctx.RequestAborted)
-            .GetAwaiter().GetResult();
+        var history = await access.GetOrderStatusHistoryForBuyerAsync(orderId, addr!, chainId, ctx.RequestAborted);
 
         if (history is null)
         {

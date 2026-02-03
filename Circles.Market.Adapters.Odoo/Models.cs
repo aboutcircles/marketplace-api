@@ -3,6 +3,30 @@ using System.Text.Json.Serialization;
 
 namespace Circles.Market.Adapters.Odoo;
 
+/// <summary>
+/// Converts Odoo's "false" boolean to null for string properties.
+/// Odoo returns false instead of null for empty optional string fields like barcode.
+/// </summary>
+public class OdooFalseAsNullStringConverter : JsonConverter<string?>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.False)
+            return null;
+        if (reader.TokenType == JsonTokenType.Null)
+            return null;
+        return reader.GetString();
+    }
+
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
+    {
+        if (value is null)
+            writer.WriteNullValue();
+        else
+            writer.WriteStringValue(value);
+    }
+}
+
 
 /// <summary>
 /// JSON‑RPC request envelope used by Odoo.
@@ -132,6 +156,35 @@ public class OdooProductVariantMinimalDto
 
     [System.Text.Json.Serialization.JsonPropertyName("display_name")]
     public string? DisplayName { get; set; }
+}
+
+/// <summary>
+/// Product variant listing fields for admin catalog lookups.
+/// </summary>
+public class OdooProductVariantListItemDto
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("display_name")]
+    public string? DisplayName { get; set; }
+
+    [JsonPropertyName("default_code")]
+    public string? DefaultCode { get; set; }
+
+    // Odoo many2one: [id, "Name"]
+    [JsonPropertyName("product_tmpl_id")]
+    public JsonElement ProductTemplateRaw { get; set; }
+
+    [JsonPropertyName("barcode")]
+    [JsonConverter(typeof(OdooFalseAsNullStringConverter))]
+    public string? Barcode { get; set; }
+
+    [JsonPropertyName("qty_available")]
+    public decimal QtyAvailable { get; set; }
+
+    [JsonPropertyName("active")]
+    public bool Active { get; set; }
 }
 
 public class OdooSaleOrderReadDto

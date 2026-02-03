@@ -12,6 +12,7 @@
     <PackageReference Include="Npgsql" Version="10.0.1" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\\Circles.Market.Auth.Siwe\\Circles.Market.Auth.Siwe.csproj" />
     <ProjectReference Include="..\Circles.Market.Shared\Circles.Market.Shared.csproj" />
   </ItemGroup>
 </Project>

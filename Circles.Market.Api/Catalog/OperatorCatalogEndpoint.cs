@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Circles.Market.Api.Routing;
 using Circles.Profiles.Market;
 using Circles.Profiles.Models.Market;
 
@@ -35,6 +36,7 @@ public static class OperatorCatalogEndpoint
         string? cursor,
         int? offset,
         HttpContext ctx,
+        IMarketRouteStore routes,
         OperatorCatalogService opCatalog,
         CancellationToken ct,
         ILogger? logger = null)
@@ -131,6 +133,9 @@ public static class OperatorCatalogEndpoint
             var (avatarsScanned, products, errors) =
                 await opCatalog.AggregateAsync(op, avatars, chain, winStart, winEnd, ct);
 
+            // Note: DB routing controls feed emission (see ReplaceInventoryFeedUrlsAsync), not aggregation.
+            // All aggregated products are included in the catalog response.
+
             int total = products.Count;
 
             bool beyondEnd = startIndex > total;
@@ -167,7 +172,7 @@ public static class OperatorCatalogEndpoint
             // Rewrite offer feed URLs to point to the Market API endpoints
             // so clients consume a uniform, validated interface instead of arbitrary upstream URLs.
             string baseUrl = ResolvePublicBaseUrl(ctx);
-            ReplaceInventoryFeedUrls(page, chain, baseUrl);
+            await ReplaceInventoryFeedUrlsAsync(page, chain, baseUrl, routes, ct);
 
             var aggPayload = new AggregatedCatalog
             {
@@ -214,70 +219,86 @@ public static class OperatorCatalogEndpoint
         }
     }
 
-    private static void ReplaceInventoryFeedUrls(List<AggregatedCatalogItem> page, long chain, string baseUrl)
+    private static async Task ReplaceInventoryFeedUrlsAsync(
+        List<AggregatedCatalogItem> page,
+        long chain,
+        string baseUrl,
+        IMarketRouteStore routes,
+        CancellationToken ct)
     {
-        if (page.Count > 0)
+        if (page.Count <= 0)
         {
-            for (int i = 0; i < page.Count; i++)
+            return;
+        }
+
+        for (int i = 0; i < page.Count; i++)
+        {
+            var item = page[i];
+            var prod = item.Product;
+            if (prod is null || string.IsNullOrWhiteSpace(prod.Sku) || prod.Offers is not { Count: > 0 })
             {
-                var item = page[i];
-                var prod = item.Product;
-                if (prod is null || string.IsNullOrWhiteSpace(prod.Sku) || prod.Offers is not { Count: > 0 })
-                {
-                    continue;
-                }
-
-                string sellerAddr = Utils.NormalizeAddr(item.Seller);
-                string sku = prod.Sku.Trim().ToLowerInvariant();
-
-                // Ensure we have a single-slash join when composing absolute URLs
-                static string Join(string a, string b) => a.EndsWith('/')
-                    ? (a + (b.StartsWith('/') ? b[1..] : b))
-                    : (a + (b.StartsWith('/') ? b : "/" + b));
-
-                var newOffers = new List<SchemaOrgOffer>(prod.Offers.Count);
-                foreach (var offer in prod.Offers)
-                {
-                    // New rule: Always expose availabilityFeed endpoint for one-off items
-                    // - If an inventoryFeed exists (even when availabilityFeed is missing),
-                    //   the catalog must expose an availabilityFeed endpoint.
-                    // - If neither inventoryFeed nor availabilityFeed exists, still expose availabilityFeed for one-off items
-                    bool hasInventory = !string.IsNullOrWhiteSpace(offer.CirclesInventoryFeed);
-                    bool hasAvailability = !string.IsNullOrWhiteSpace(offer.CirclesAvailabilityFeed);
-                    bool isOneOff = !hasInventory && !hasAvailability;
-
-                    string? availability = (hasInventory || hasAvailability || isOneOff)
-                        ? Join(baseUrl,
-                            $"{MarketConstants.Routes.AvailabilityBase}/{chain}/{WebUtility.UrlEncode(sellerAddr)}/{WebUtility.UrlEncode(sku)}")
-                        : null;
-
-                    // Inventory endpoint is only provided when original inventoryFeed exists.
-                    string? inventory = hasInventory
-                        ? Join(baseUrl,
-                            $"{MarketConstants.Routes.InventoryBase}/{chain}/{WebUtility.UrlEncode(sellerAddr)}/{WebUtility.UrlEncode(sku)}")
-                        : null;
-
-                    // Build a uniform PayAction for this offer (same path for EOAs or Safes)
-                    // var payTo = $"eip155:{chain}:{sellerAddr}"; // seller already normalized (lowercase)
-                    var action = new SchemaOrgPayAction
-                    {
-                        Price = offer.Price,
-                        PriceCurrency = offer.PriceCurrency,
-                        Recipient = offer.PotentialAction?.Recipient,
-                        Instrument = offer.PotentialAction?.Instrument
-                    };
-
-                    newOffers.Add(offer with
-                    {
-                        CirclesAvailabilityFeed = availability,
-                        CirclesInventoryFeed = inventory,
-                        PotentialAction = action
-                    });
-                }
-
-                var newProd = prod with { Offers = newOffers };
-                page[i] = item with { Product = newProd };
+                continue;
             }
+
+            string sellerAddr = Utils.NormalizeAddr(item.Seller);
+            string sku = prod.Sku.Trim().ToLowerInvariant();
+
+            var cfg = await routes.TryGetAsync(chain, sellerAddr, sku, ct);
+
+            bool isOneOff = cfg is not null && cfg.IsOneOff;
+
+            string? invUpstream = null;
+            string? availUpstream = null;
+
+            if (cfg is not null && cfg.IsConfigured && !cfg.IsOneOff)
+            {
+                invUpstream = await routes.TryResolveUpstreamAsync(chain, sellerAddr, sku, MarketServiceKind.Inventory, ct);
+                availUpstream = await routes.TryResolveUpstreamAsync(chain, sellerAddr, sku, MarketServiceKind.Availability, ct);
+            }
+
+            bool hasInventoryRoute = !string.IsNullOrWhiteSpace(invUpstream);
+            bool hasAvailabilityRoute = !string.IsNullOrWhiteSpace(availUpstream);
+
+            bool emitAvailability = hasInventoryRoute || hasAvailabilityRoute || isOneOff;
+            bool emitInventory = hasInventoryRoute;
+
+            static string Join(string a, string b) => a.EndsWith('/')
+                ? (a + (b.StartsWith('/') ? b[1..] : b))
+                : (a + (b.StartsWith('/') ? b : "/" + b));
+
+            var newOffers = new List<SchemaOrgOffer>(prod.Offers.Count);
+
+            foreach (var offer in prod.Offers)
+            {
+                string? availability = emitAvailability
+                    ? Join(baseUrl,
+                        $"{MarketConstants.Routes.AvailabilityBase}/{chain}/{WebUtility.UrlEncode(sellerAddr)}/{WebUtility.UrlEncode(sku)}")
+                    : null;
+
+                string? inventory = emitInventory
+                    ? Join(baseUrl,
+                        $"{MarketConstants.Routes.InventoryBase}/{chain}/{WebUtility.UrlEncode(sellerAddr)}/{WebUtility.UrlEncode(sku)}")
+                    : null;
+
+                var action = new SchemaOrgPayAction
+                {
+                    Price = offer.Price,
+                    PriceCurrency = offer.PriceCurrency,
+                    Recipient = offer.PotentialAction?.Recipient,
+                    Instrument = offer.PotentialAction?.Instrument
+                };
+
+                newOffers.Add(offer with
+                {
+                    CirclesAvailabilityFeed = availability,
+                    CirclesInventoryFeed = inventory,
+                    CirclesFulfillmentEndpoint = null,
+                    PotentialAction = action
+                });
+            }
+
+            var newProd = prod with { Offers = newOffers };
+            page[i] = item with { Product = newProd };
         }
     }
 

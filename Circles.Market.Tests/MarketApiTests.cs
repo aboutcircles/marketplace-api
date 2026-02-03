@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Circles.Market.Api.Catalog;
+using Circles.Market.Api.Routing;
 using Circles.Market.Tests.Mocks;
 using Circles.Profiles.Aggregation;
 using Circles.Profiles.Interfaces;
@@ -10,6 +11,26 @@ using Microsoft.AspNetCore.Http;
 using Moq;
 
 namespace Circles.Market.Tests;
+
+internal class AlwaysConfiguredRouteStore : IMarketRouteStore
+{
+    public Task EnsureSchemaAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+    public Task<bool> IsConfiguredAsync(long chainId, string sellerAddress, string sku, CancellationToken ct = default)
+        => Task.FromResult(true);
+
+    public Task<string?> TryResolveUpstreamAsync(long chainId, string sellerAddress, string sku, MarketServiceKind serviceKind,
+        CancellationToken ct = default) => Task.FromResult<string?>(null);
+
+    public Task<MarketRouteConfig?> TryGetAsync(long chainId, string sellerAddress, string sku, CancellationToken ct = default)
+        => Task.FromResult<MarketRouteConfig?>(new MarketRouteConfig(
+            ChainId: chainId,
+            SellerAddress: sellerAddress.Trim().ToLowerInvariant(),
+            Sku: sku.Trim().ToLowerInvariant(),
+            OfferType: "odoo",
+            IsOneOff: false,
+            Enabled: true));
+}
 
 [TestFixture]
 public class MarketApiTests
@@ -120,7 +141,7 @@ public class MarketApiTests
         string cur = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new { start = -1 }));
         ctx.Response.Body = new MemoryStream();
 
-        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, cur, null, ctx, null!, CancellationToken.None);
+        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, cur, null, ctx, new AlwaysConfiguredRouteStore(), opCatalog: null!, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status400BadRequest));
         ctx.Response.Body.Position = 0;
@@ -147,7 +168,8 @@ public class MarketApiTests
         ctx.Request.QueryString = new QueryString("?avatars=0x1234567890123456789012345678901234567890");
         ctx.Response.Body = new MemoryStream();
 
-        await OperatorCatalogEndpoint.Handle("0x1234567890123456789012345678901234567890", 100, 0, (long?)null, 10, null, 0, ctx, svc, CancellationToken.None);
+        var routes = new AlwaysConfiguredRouteStore();
+        await OperatorCatalogEndpoint.Handle("0x1234567890123456789012345678901234567890", 100, 0, (long?)null, 10, null, 0, ctx, routes, svc, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status200OK));
         Assert.That(ctx.Response.Headers.ContainsKey("Vary"), Is.False);

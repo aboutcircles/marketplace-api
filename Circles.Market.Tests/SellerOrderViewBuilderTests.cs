@@ -49,6 +49,21 @@ public class SellerOrderViewBuilderTests
     }
 
     [Test]
+    public void Build_Nulls_FulfillmentEndpoint_For_Seller_View()
+    {
+        var order = MakeSampleOrder();
+
+        // Inject a legacy fulfillment endpoint into the internal snapshot
+        order.AcceptedOffer[0].CirclesFulfillmentEndpoint = "https://evil.example/fulfill";
+
+        var indices = new[] { 0 };
+        var dto = SellerOrderViewBuilder.Build(order, indices);
+
+        Assert.That(dto.AcceptedOffer.Count, Is.EqualTo(1));
+        Assert.That(dto.AcceptedOffer[0].CirclesFulfillmentEndpoint, Is.Null);
+    }
+
+    [Test]
     public void Build_Throws_On_Index_Mismatch()
     {
         var order = MakeSampleOrder();

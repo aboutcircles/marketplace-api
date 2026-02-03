@@ -46,10 +46,28 @@ public static class SellerOrderViewBuilder
             Outbox = new List<OrderOutboxItemDto>() // default empty for seller
         };
 
-        // Filter arrays by the same index set
+        // Filter arrays by the same index set, sanitizing sensitive fields
         foreach (var i in sellerLineIndices)
         {
-            dto.AcceptedOffer.Add(internalOrder.AcceptedOffer![i]);
+            var srcOffer = internalOrder.AcceptedOffer![i];
+            if (srcOffer is null)
+            {
+                throw new InvalidOperationException($"Order snapshot is malformed: AcceptedOffer[{i}] is null");
+            }
+
+            dto.AcceptedOffer.Add(new OfferSnapshot
+            {
+                Type = srcOffer.Type,
+                Price = srcOffer.Price,
+                PriceCurrency = srcOffer.PriceCurrency,
+                Seller = srcOffer.Seller,
+                AvailableDeliveryMethod = srcOffer.AvailableDeliveryMethod?.ToList(),
+                RequiredSlots = srcOffer.RequiredSlots?.ToList(),
+                CirclesFulfillmentEndpoint = null,
+                CirclesFulfillmentTrigger = srcOffer.CirclesFulfillmentTrigger,
+                IsOneOff = srcOffer.IsOneOff
+            });
+
             dto.OrderedItem.Add(internalOrder.OrderedItem![i]);
         }
 
