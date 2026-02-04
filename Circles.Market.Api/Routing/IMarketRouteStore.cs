@@ -22,4 +22,9 @@ public interface IMarketRouteStore
     /// Returns null when no enabled configuration exists.
     /// </summary>
     Task<MarketRouteConfig?> TryGetAsync(long chainId, string sellerAddress, string sku, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns all active seller addresses that have at least one enabled route configuration.
+    /// </summary>
+    Task<IReadOnlyList<MarketSellerAddress>> GetActiveSellersAsync(CancellationToken ct = default);
 }

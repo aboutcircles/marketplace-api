@@ -280,4 +280,30 @@ LIMIT 1";
 
         return expanded;
     }
+
+    public async Task<IReadOnlyList<MarketSellerAddress>> GetActiveSellersAsync(CancellationToken ct = default)
+    {
+        var result = new List<MarketSellerAddress>();
+
+        await using var conn = new NpgsqlConnection(_connString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+SELECT DISTINCT r.chain_id, r.seller_address
+FROM market_service_routes r
+LEFT JOIN offer_types ot ON r.offer_type = ot.offer_type
+WHERE r.enabled = true
+  AND (r.is_one_off = true OR (r.offer_type IS NOT NULL AND ot.enabled = true))
+ORDER BY r.chain_id, r.seller_address";
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            result.Add(new MarketSellerAddress(
+                ChainId: reader.GetInt64(0),
+                SellerAddress: reader.GetString(1)));
+        }
+
+        return result;
+    }
 }

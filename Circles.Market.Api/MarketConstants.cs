@@ -30,6 +30,7 @@ public static class MarketConstants
         public const string Canonicalize = "/api/canonicalize";
         public const string AvailabilityBase = "/inventory/availability";
         public const string InventoryBase = "/inventory/inventory";
+        public const string Sellers = "/api/sellers";
     }
 
     public static class Defaults

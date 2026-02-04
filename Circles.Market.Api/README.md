@@ -3,6 +3,7 @@
 This service exposes:
 - Operator Aggregated Catalog: read verified `product/*` links across many avatars (sellers) under an operator namespace.
 - Cart + Orders APIs: create/patch/validate baskets, checkout into immutable orders, buyer- and seller-scoped reads.
+- Active Sellers: list all currently configured and active seller addresses.
 
 ## Operator Aggregated Catalog
 
@@ -20,6 +21,28 @@ GET /api/operator/0xoperator/catalog?avatars=0xsellerA&avatars=0xsellerB&chainId
 Notes:
 - Addresses are case-insensitive but treated as lowercase internally.
 - Uses strict verification (EOA low-S, Safe ERC-1271 bytes with from=signer).
+
+## Active Sellers
+
+GET /api/sellers
+
+Returns all distinct seller addresses that have at least one enabled route configuration. Each entry includes the chainId and seller address.
+
+Example:
+GET /api/sellers
+
+Example response:
+
+```json
+{
+  "sellers": [
+    {
+      "chainId": 100,
+      "seller": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ]
+}
+```
 
 ## Cart API highlights
 

@@ -33,5 +33,22 @@ public static class ServiceEndpoints
                 "Aggregates verified product/* links across many avatars under the operator namespace and returns a paged AggregatedCatalog.")
             .WithDescription(
                 "Inputs: operator address path param; repeated ?avatars=...; optional chainId/start/end; cursor/offset pagination. Implements CPA rules (verification, chain domain, nonce replay, time window) and reduces to newest-first product catalog with tombstone support.");
+
+        app.MapGet(MarketConstants.Routes.Sellers,
+                async (IMarketRouteStore routes, CancellationToken ct) =>
+                {
+                    var sellers = await routes.GetActiveSellersAsync(ct);
+                    return Results.Json(new
+                    {
+                        sellers = sellers.Select(seller => new
+                        {
+                            chainId = seller.ChainId,
+                            seller = seller.SellerAddress
+                        })
+                    });
+                })
+            .WithName("ActiveSellers")
+            .WithSummary("List all active seller addresses with at least one enabled route.")
+            .WithDescription("Returns distinct seller addresses from enabled market routes. Sellers are returned as lowercase eip155 addresses with their chainId.");
     }
 }
