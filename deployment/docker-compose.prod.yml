@@ -1,6 +1,8 @@
+# Production compose — uses pre-built images from Docker Hub.
+# Layered with docker-compose.override.yml (Ansible-rendered) for per-host config.
 services:
   market-api:
-    image: aboutcircles/market-api:${MARKET_API_TAG}
+    image: aboutcircles/market-api:${MARKET_API_TAG:-latest}
     restart: unless-stopped
     entrypoint: ["dotnet", "Circles.Market.Api.dll"]
     environment:
@@ -19,6 +21,7 @@ services:
       MARKET_ODOO_ADAPTER_TOKEN: ${MARKET_ODOO_ADAPTER_TOKEN-}
       MARKET_CODE_DISPENSER_TOKEN: ${MARKET_CODE_DISPENSER_TOKEN-}
       RPC: ${RPC}
+      CIRCLES_RPC: ${CIRCLES_RPC:-}
       POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_MARKET_API};Username=${DB_MARKET_API_USER};Password=${DB_MARKET_API_PASSWORD}
       IPFS_RPC_URL: ${IPFS_RPC_URL}
       IPFS_RPC_BEARER: ${IPFS_RPC_BEARER}
@@ -32,6 +35,10 @@ services:
       ODOO_ADMIN_INTERNAL_URL: http://market-adapter-odoo:${MARKET_ODOO_ADMIN_PORT}
       CODEDISP_ADMIN_INTERNAL_URL: http://market-adapter-codedispenser:${MARKET_CODEDISP_ADMIN_PORT}
       ADMIN_PROXY_ALLOWED_HOSTS: market-adapter-odoo,market-adapter-codedispenser,localhost,127.0.0.1
+      # Auth-service JWKS (RS256, opt-in: set AUTH_SERVICE_URL to enable dual-scheme)
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
     env_file:
       - .env
     volumes:
