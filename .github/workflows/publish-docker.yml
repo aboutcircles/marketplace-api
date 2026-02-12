@@ -3,7 +3,7 @@ name: Publish Docker Images
 on:
   push:
     branches:
-      - main
+      - master
     tags:
       - "v*"
   release:
@@ -11,7 +11,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Kill switch: Set repository variable DEPLOYMENTS_ENABLED=false to disable automated builds
+  # Manual workflow_dispatch always allowed
+  check-killswitch:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - name: Check deployment kill switch
+        id: check
+        env:
+          DEPLOYMENTS_ENABLED: ${{ vars.DEPLOYMENTS_ENABLED }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          ENABLED="${DEPLOYMENTS_ENABLED:-true}"
+          if [ "$ENABLED" = "false" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "::notice::Deployments disabled via DEPLOYMENTS_ENABLED=false"
+            echo "proceed=false" >> $GITHUB_OUTPUT
+          else
+            echo "proceed=true" >> $GITHUB_OUTPUT
+          fi
+
   build-and-push:
+    needs: check-killswitch
+    if: needs.check-killswitch.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
