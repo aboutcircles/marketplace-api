@@ -230,7 +230,22 @@ export ODOO_ADMIN_PORT=5688
 
 ---
 
-# More detailed configuration (scaling beyond “one local service”)
+## Auth-service JWKS (opt-in dual-scheme)
+
+The Market API supports an optional second authentication scheme using RS256/JWKS from an external auth service. When enabled, both local SIWE (HS256) and auth-service (RS256) JWTs are accepted.
+
+```bash
+# Enable by setting AUTH_SERVICE_URL (empty or unset = disabled)
+export AUTH_SERVICE_URL="https://staging.circlesubi.network/auth"
+export AUTH_JWT_ISSUER="circles-auth"     # default: circles-auth
+export AUTH_JWT_AUDIENCE="market-api"      # default: market-api
+```
+
+The JWKS public keys are fetched from `{AUTH_SERVICE_URL}/.well-known/jwks.json` and cached for 10 minutes.
+
+---
+
+# More detailed configuration (scaling beyond "one local service")
 
 Key rotation and overrides are handled via env vars; use per-adapter overrides only if you need different secrets per service.
 
