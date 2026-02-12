@@ -39,11 +39,13 @@ public static class AuthEndpoints
         string audience = Environment.GetEnvironmentVariable("AUTH_JWT_AUDIENCE")
                           ?? "market-api";
 
+        string jwksUrl = $"{authServiceUrl.TrimEnd('/')}/.well-known/jwks.json";
+
         // Create the JWKS key manager as a singleton
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<JwksKeyManager>>();
-            return new JwksKeyManager(authServiceUrl, logger);
+            return new JwksKeyManager(jwksUrl, logger);
         });
 
         // Use post-configure to wire up the key resolver after services are built

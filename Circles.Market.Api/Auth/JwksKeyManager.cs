@@ -3,10 +3,8 @@ using Microsoft.IdentityModel.Tokens;
 namespace Circles.Market.Api.Auth;
 
 /// <summary>
-/// Manages JWKS (JSON Web Key Set) fetching and caching from the auth service.
-///
-/// This service fetches the public keys from the auth service's JWKS endpoint
-/// and caches them with automatic refresh. Used for RS256 JWT validation.
+/// Fetches and caches JWKS (JSON Web Key Set) signing keys from an external auth service.
+/// Thread-safe with 10-minute cache and graceful fallback to stale keys on fetch failure.
 /// </summary>
 public sealed class JwksKeyManager : IDisposable
 {
@@ -19,9 +17,9 @@ public sealed class JwksKeyManager : IDisposable
     private IList<SecurityKey>? _cachedKeys;
     private DateTimeOffset _cacheExpiry = DateTimeOffset.MinValue;
 
-    public JwksKeyManager(string authServiceUrl, ILogger<JwksKeyManager> log)
+    public JwksKeyManager(string jwksUrl, ILogger<JwksKeyManager> log)
     {
-        _jwksUrl = $"{authServiceUrl.TrimEnd('/')}/.well-known/jwks.json";
+        _jwksUrl = jwksUrl;
         _log = log;
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     }
@@ -81,8 +79,8 @@ public sealed class JwksKeyManager : IDisposable
     }
 
     /// <summary>
-    /// Synchronous key resolver for use with TokenValidationParameters.
-    /// Fetches keys synchronously (blocking) when needed.
+    /// Synchronous adapter for <see cref="TokenValidationParameters.IssuerSigningKeyResolver"/>.
+    /// Safe to block here: most calls hit cache, and the HTTP client has a short timeout.
     /// </summary>
     public IEnumerable<SecurityKey> ResolveSigningKeys(
         string token,
@@ -90,11 +88,6 @@ public sealed class JwksKeyManager : IDisposable
         string kid,
         TokenValidationParameters validationParameters)
     {
-        // Note: This is called synchronously by the JWT middleware.
-        // We use GetAwaiter().GetResult() which is safe here because:
-        // 1. We have caching, so most calls return immediately
-        // 2. The HTTP call has a short timeout
-        // 3. This runs in ASP.NET Core's thread pool, not on a UI thread
         return GetSigningKeysAsync().GetAwaiter().GetResult();
     }
 
