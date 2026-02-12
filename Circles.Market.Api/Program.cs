@@ -18,6 +18,7 @@ using Circles.Profiles.Market;
 using Circles.Profiles.Sdk;
 using Circles.Profiles.Sdk.Utils;
 using Nethereum.Web3;
+using Prometheus;
 
 static string SafeUrl(string url)
 {
@@ -315,6 +316,7 @@ publicApp.UseCors("AllowAll");
 publicApp.UseRateLimiter();
 publicApp.UseAuthentication();
 publicApp.UseAuthorization();
+publicApp.UseHttpMetrics();
 
 // Health endpoint for container orchestration
 publicApp.MapServiceApi();
@@ -324,6 +326,7 @@ publicApp.MapSiweAuthApi("/api/auth", "Sign in to Circles Market", MarketConstan
 publicApp.MapPinApi();
 publicApp.MapInventoryApi();
 publicApp.MapCanonicalizeApi();
+publicApp.MapMetrics();
 
 var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();

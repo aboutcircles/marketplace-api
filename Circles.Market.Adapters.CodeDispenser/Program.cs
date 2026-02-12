@@ -5,6 +5,7 @@ using Circles.Market.Auth.Siwe;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
 using Npgsql;
+using Prometheus;
 
 var publicBuilder = WebApplication.CreateBuilder(args);
 
@@ -72,6 +73,8 @@ using (var scope = publicApp.Services.CreateScope())
         }
     }
 }
+
+publicApp.UseHttpMetrics();
 
 // Health endpoint
 publicApp.MapGet("/health", () => Results.Json(new { ok = true }));
@@ -359,6 +362,8 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         });
     }
 });
+
+publicApp.MapMetrics();
 
 var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
