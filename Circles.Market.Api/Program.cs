@@ -242,42 +242,10 @@ publicBuilder.Services.AddCors(options =>
     );
 });
 
-// Auth: JWT + challenge store
-var publicAuthOptions = new SiweAuthOptions
-{
-    AllowedDomainsEnv = "MARKET_AUTH_ALLOWED_DOMAINS",
-    PublicBaseUrlEnv = "PUBLIC_BASE_URL",
-    ExternalBaseUrlEnv = "EXTERNAL_BASE_URL",
-    JwtSecretEnv = "MARKET_JWT_SECRET",
-    JwtIssuerEnv = "MARKET_JWT_ISSUER",
-    JwtAudienceEnv = "MARKET_JWT_AUDIENCE",
-    RequirePublicBaseUrl = false,
-    RequireAllowlist = false
-};
-
-publicBuilder.Services.AddSiweJwtAuth(publicAuthOptions);
-publicBuilder.Services.AddSiweAuthService(
-    publicAuthOptions,
-    sp => new PostgresAuthChallengeStore(
-        Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")
-        ?? throw new Exception("POSTGRES_CONNECTION env variable is required"),
-        sp.GetRequiredService<ILogger<PostgresAuthChallengeStore>>()));
-
-// Auth-service JWKS (opt-in dual-scheme): when AUTH_SERVICE_URL is set, register
-// a second "AuthService" JWT scheme that validates RS256 tokens from the auth service.
-// Both "Bearer" (local SIWE/HS256) and "AuthService" (RS256/JWKS) are accepted.
-bool hasAuthService = publicBuilder.Services.TryAddAuthServiceJwks();
-if (hasAuthService)
-{
-    publicBuilder.Services.AddAuthorization(options =>
-    {
-        options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(
-            Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerDefaults.AuthenticationScheme,
-            AuthServiceJwksExtensions.AuthServiceScheme)
-            .RequireAuthenticatedUser()
-            .Build();
-    });
-}
+// Auth: auth-service JWKS (RS256) — sole buyer authentication
+// Clients authenticate via the auth-service (DO) challenge/verify flow
+// and send: Authorization: Bearer <auth-service-jwt>
+publicBuilder.Services.AddAuthServiceJwks();
 
 var publicApp = publicBuilder.Build();
 
@@ -289,8 +257,7 @@ publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_GATEWAY_
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "POSTGRES_CONNECTION", SafeConnectionString(pgConn!));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "DB_AUTO_MIGRATE", autoMigrate);
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "AUTH_SERVICE_URL",
-    Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "[disabled]");
-publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "AUTH_DUAL_SCHEME", hasAuthService);
+    Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "[MISSING]");
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "CATALOG_AVATAR_PROFILE_TIMEOUT_MS",
     Environment.GetEnvironmentVariable("CATALOG_AVATAR_PROFILE_TIMEOUT_MS") ?? "[unset]");
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "ASPNETCORE_URLS",
@@ -341,7 +308,7 @@ publicApp.UseHttpMetrics();
 publicApp.MapServiceApi();
 
 publicApp.MapCartApi();
-publicApp.MapSiweAuthApi("/api/auth", "Sign in to Circles Market", MarketConstants.ContentTypes.JsonLdUtf8);
+publicApp.MapAuthProxy("/api/auth");
 publicApp.MapPinApi();
 publicApp.MapInventoryApi();
 publicApp.MapCanonicalizeApi();
