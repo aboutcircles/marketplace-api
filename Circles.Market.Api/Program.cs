@@ -3,7 +3,6 @@ using System.Threading.RateLimiting;
 using Circles.Market.Api;
 using Circles.Market.Api.Admin;
 using Circles.Market.Api.Auth;
-using Circles.Market.Auth.Siwe;
 using Circles.Market.Api.Cart;
 using Circles.Market.Api.Cart.Validation;
 using Circles.Market.Api.Fulfillment;
@@ -318,17 +317,28 @@ var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
 adminBuilder.Logging.AddConsole();
 
-var adminAuthOptions = new SiweAuthOptions
+// Admin auth: auth-service JWKS (same as buyer) + address allowlist
+var adminAddressesRaw = Environment.GetEnvironmentVariable("ADMIN_ADDRESSES") ?? "";
+var adminAddresses = new HashSet<string>(
+    adminAddressesRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(a => a.ToLowerInvariant()),
+    StringComparer.OrdinalIgnoreCase);
+
+adminBuilder.Services.AddAuthServiceJwks();
+
+adminBuilder.Services.AddAuthorization(options =>
 {
-    AllowedDomainsEnv = "ADMIN_AUTH_ALLOWED_DOMAINS",
-    PublicBaseUrlEnv = "ADMIN_PUBLIC_BASE_URL",
-    JwtSecretEnv = "ADMIN_JWT_SECRET",
-    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
-    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE",
-    RequirePublicBaseUrl = true,
-    RequireAllowlist = true,
-    AllowlistEnv = "ADMIN_ADDRESSES"
-};
+    options.AddPolicy("AdminOnly", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(context =>
+        {
+            var addr = context.User.FindFirst("addr")?.Value
+                       ?? context.User.FindFirst("address")?.Value;
+            return addr != null && adminAddresses.Contains(addr.ToLowerInvariant());
+        });
+    });
+});
 
 // Admin CORS: dev-friendly, prod-safe
 var adminCorsOrigins = Environment.GetEnvironmentVariable("ADMIN_CORS_ALLOWED_ORIGINS");
@@ -357,16 +367,7 @@ else if (adminBuilder.Environment.IsDevelopment())
     });
 }
 
-adminBuilder.Services.AddSiweJwtAuth(adminAuthOptions, AdminAuthConstants.Scheme);
-adminBuilder.Services.AddSiweAuthService(
-    adminAuthOptions,
-    sp => new PostgresAuthChallengeStore(
-        pgConn!,
-        sp.GetRequiredService<ILogger<PostgresAuthChallengeStore>>(),
-        tableName: "admin_auth_challenges"),
-    addressNormalizer: AddressUtils.NormalizeToLowercase,
-    addressValidator: AddressUtils.IsValidLowercaseAddress);
-adminBuilder.Services.AddAdminSignatureVerifier();
+adminBuilder.Services.AddHttpClient();
 
 int adminPort = AdminPortConfig.GetAdminPort("MARKET_ADMIN_PORT", 5090);
 adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{adminPort}");
@@ -425,7 +426,7 @@ if (adminCorsConfigured)
 adminApp.UseAuthentication();
 adminApp.UseAuthorization();
 
-adminApp.MapSiweAuthApi("/admin/auth", "Sign in as admin", AdminAuthConstants.ContentType);
+adminApp.MapAuthProxy("/admin/auth");
 adminApp.MapMarketAdminApi("/admin", pgConn!);
 
 var publicTask = publicApp.RunAsync();
