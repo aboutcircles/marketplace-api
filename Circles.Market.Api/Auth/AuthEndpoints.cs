@@ -5,54 +5,41 @@ using Microsoft.IdentityModel.Tokens;
 namespace Circles.Market.Api.Auth;
 
 /// <summary>
-/// JWT authentication configuration using RS256/JWKS from the centralized auth service.
+/// Opt-in JWT authentication using RS256/JWKS from the centralized auth service.
+/// Registers as a second named scheme ("AuthService") alongside the existing SIWE "Bearer" scheme.
 ///
-/// Authentication flow:
-/// 1. Client authenticates with circles-auth-service (SIWE or Passkey)
-/// 2. Auth service issues JWT signed with its PRIVATE key (RS256)
-/// 3. Client sends JWT to this API in Authorization header
-/// 4. This API validates using PUBLIC key from auth service's JWKS endpoint
-/// 5. If valid, the user is authenticated
-///
-/// Trust model:
-/// - We trust the auth service because we trust its domain (AUTH_SERVICE_URL)
-/// - We verify the JWT signature using the public key from JWKS
-/// - If signature is valid, the token was definitely issued by the auth service
-/// - No shared secrets needed between services
+/// When AUTH_SERVICE_URL is set, both schemes are active. Clients can authenticate via:
+/// - Authorization: Bearer &lt;local-siwe-jwt&gt;  (HS256, existing SIWE flow)
+/// - Authorization: AuthService &lt;auth-service-jwt&gt;  (RS256, auth-service JWKS)
 /// </summary>
-public static class AuthEndpoints
+public static class AuthServiceJwksExtensions
 {
-    /// <summary>
-    /// Configures JWT authentication using JWKS from the auth service.
-    ///
-    /// Environment variables:
-    /// - AUTH_SERVICE_URL: Base URL of the auth service (default: https://staging.circlesubi.network/auth)
-    /// - AUTH_JWT_ISSUER: Expected JWT issuer (default: circles-auth)
-    /// - AUTH_JWT_AUDIENCE: Expected JWT audience (default: market-api)
-    /// </summary>
-    public static void AddJwtAuth(this IServiceCollection services)
-    {
-        string authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
-                                ?? "https://staging.circlesubi.network/auth";
-        string issuer = Environment.GetEnvironmentVariable("AUTH_JWT_ISSUER")
-                        ?? "circles-auth";
-        string audience = Environment.GetEnvironmentVariable("AUTH_JWT_AUDIENCE")
-                          ?? "market-api";
+    public const string AuthServiceScheme = "AuthService";
 
+    /// <summary>
+    /// Adds auth-service JWKS as a second authentication scheme if AUTH_SERVICE_URL is configured.
+    /// Returns true if the scheme was registered, false if AUTH_SERVICE_URL is not set.
+    /// </summary>
+    public static bool TryAddAuthServiceJwks(this IServiceCollection services)
+    {
+        string? authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL");
+        if (string.IsNullOrWhiteSpace(authServiceUrl))
+            return false;
+
+        string issuer = Environment.GetEnvironmentVariable("AUTH_JWT_ISSUER") ?? "circles-auth";
+        string audience = Environment.GetEnvironmentVariable("AUTH_JWT_AUDIENCE") ?? "market-api";
         string jwksUrl = $"{authServiceUrl.TrimEnd('/')}/.well-known/jwks.json";
 
-        // Create the JWKS key manager as a singleton
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<JwksKeyManager>>();
             return new JwksKeyManager(jwksUrl, logger);
         });
 
-        // Use post-configure to wire up the key resolver after services are built
-        services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, JwtBearerOptionsPostConfigure>();
+        services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, AuthServiceJwtPostConfigure>();
 
-        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddJwtBearer(options =>
+        services.AddAuthentication()
+            .AddJwtBearer(AuthServiceScheme, options =>
             {
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
@@ -63,58 +50,42 @@ public static class AuthEndpoints
                     ValidIssuer = issuer,
                     ValidAudience = audience,
                     ClockSkew = TimeSpan.FromSeconds(30)
-                    // IssuerSigningKeyResolver is set in JwtBearerOptionsPostConfigure
+                    // IssuerSigningKeyResolver is set in AuthServiceJwtPostConfigure
                 };
 
-                // Log validation failures for debugging
                 options.Events = new JwtBearerEvents
                 {
                     OnAuthenticationFailed = context =>
                     {
                         var logger = context.HttpContext.RequestServices
                             .GetRequiredService<ILoggerFactory>()
-                            .CreateLogger("JwtAuth");
+                            .CreateLogger("AuthServiceJwks");
                         logger.LogWarning(context.Exception,
-                            "JWT authentication failed: {Message}", context.Exception.Message);
+                            "Auth-service JWT validation failed: {Message}", context.Exception.Message);
                         return Task.CompletedTask;
                     }
                 };
             });
 
-        services.AddAuthorization();
-    }
-
-    /// <summary>
-    /// Maps auth-related endpoints. Currently empty since auth is handled by the external auth-service.
-    /// Kept for backwards compatibility and potential future health/info endpoints.
-    /// </summary>
-    public static IEndpointRouteBuilder MapAuthApi(this IEndpointRouteBuilder app)
-    {
-        // No local auth endpoints - authentication is handled by the centralized auth-service.
-        // Clients should authenticate via:
-        // - POST {AUTH_SERVICE_URL}/challenge - get SIWE challenge
-        // - POST {AUTH_SERVICE_URL}/verify - verify signature, get JWT
-        // Then include the JWT in Authorization: Bearer <token> header for this API.
-        return app;
+        return true;
     }
 }
 
 /// <summary>
-/// Post-configures JwtBearerOptions to wire up the JWKS key manager after DI is built.
+/// Post-configures JwtBearerOptions to wire up the JWKS key manager for the AuthService scheme.
 /// </summary>
-internal sealed class JwtBearerOptionsPostConfigure : IPostConfigureOptions<JwtBearerOptions>
+internal sealed class AuthServiceJwtPostConfigure : IPostConfigureOptions<JwtBearerOptions>
 {
     private readonly JwksKeyManager _keyManager;
 
-    public JwtBearerOptionsPostConfigure(JwksKeyManager keyManager)
+    public AuthServiceJwtPostConfigure(JwksKeyManager keyManager)
     {
         _keyManager = keyManager;
     }
 
     public void PostConfigure(string? name, JwtBearerOptions options)
     {
-        // Only configure the default scheme
-        if (name != JwtBearerDefaults.AuthenticationScheme)
+        if (name != AuthServiceJwksExtensions.AuthServiceScheme)
             return;
 
         options.TokenValidationParameters.IssuerSigningKeyResolver =

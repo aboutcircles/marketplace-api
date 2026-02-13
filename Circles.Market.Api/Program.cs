@@ -263,6 +263,22 @@ publicBuilder.Services.AddSiweAuthService(
         ?? throw new Exception("POSTGRES_CONNECTION env variable is required"),
         sp.GetRequiredService<ILogger<PostgresAuthChallengeStore>>()));
 
+// Auth-service JWKS (opt-in dual-scheme): when AUTH_SERVICE_URL is set, register
+// a second "AuthService" JWT scheme that validates RS256 tokens from the auth service.
+// Both "Bearer" (local SIWE/HS256) and "AuthService" (RS256/JWKS) are accepted.
+bool hasAuthService = publicBuilder.Services.TryAddAuthServiceJwks();
+if (hasAuthService)
+{
+    publicBuilder.Services.AddAuthorization(options =>
+    {
+        options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(
+            Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerDefaults.AuthenticationScheme,
+            AuthServiceJwksExtensions.AuthServiceScheme)
+            .RequireAuthenticatedUser()
+            .Build();
+    });
+}
+
 var publicApp = publicBuilder.Build();
 
 // Log startup settings (redacted where needed)
@@ -272,6 +288,9 @@ publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_RPC_BEAR
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_GATEWAY_URL", SafeUrl(ipfsGatewayUrl));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "POSTGRES_CONNECTION", SafeConnectionString(pgConn!));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "DB_AUTO_MIGRATE", autoMigrate);
+publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "AUTH_SERVICE_URL",
+    Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "[disabled]");
+publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "AUTH_DUAL_SCHEME", hasAuthService);
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "CATALOG_AVATAR_PROFILE_TIMEOUT_MS",
     Environment.GetEnvironmentVariable("CATALOG_AVATAR_PROFILE_TIMEOUT_MS") ?? "[unset]");
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "ASPNETCORE_URLS",
