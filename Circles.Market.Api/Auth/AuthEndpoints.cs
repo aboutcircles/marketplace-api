@@ -5,26 +5,23 @@ using Microsoft.IdentityModel.Tokens;
 namespace Circles.Market.Api.Auth;
 
 /// <summary>
-/// Opt-in JWT authentication using RS256/JWKS from the centralized auth service.
-/// Registers as a second named scheme ("AuthService") alongside the existing SIWE "Bearer" scheme.
+/// JWT authentication using RS256/JWKS from the centralized auth service (DigitalOcean).
+/// Registers as the default "Bearer" scheme. Clients authenticate via the auth-service
+/// challenge/verify flow and send: Authorization: Bearer &lt;auth-service-jwt&gt;
 ///
-/// When AUTH_SERVICE_URL is set, both schemes are active. Clients can authenticate via:
-/// - Authorization: Bearer &lt;local-siwe-jwt&gt;  (HS256, existing SIWE flow)
-/// - Authorization: AuthService &lt;auth-service-jwt&gt;  (RS256, auth-service JWKS)
+/// Requires AUTH_SERVICE_URL to be set. The JWKS public keys are fetched from
+/// {AUTH_SERVICE_URL}/.well-known/jwks.json and cached for 10 minutes.
 /// </summary>
 public static class AuthServiceJwksExtensions
 {
-    public const string AuthServiceScheme = "AuthService";
-
     /// <summary>
-    /// Adds auth-service JWKS as a second authentication scheme if AUTH_SERVICE_URL is configured.
-    /// Returns true if the scheme was registered, false if AUTH_SERVICE_URL is not set.
+    /// Adds auth-service JWKS as the default Bearer authentication scheme.
+    /// Requires AUTH_SERVICE_URL to be set.
     /// </summary>
-    public static bool TryAddAuthServiceJwks(this IServiceCollection services)
+    public static void AddAuthServiceJwks(this IServiceCollection services)
     {
-        string? authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL");
-        if (string.IsNullOrWhiteSpace(authServiceUrl))
-            return false;
+        string authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
+            ?? throw new InvalidOperationException("AUTH_SERVICE_URL is required");
 
         string issuer = Environment.GetEnvironmentVariable("AUTH_JWT_ISSUER") ?? "circles-auth";
         string audience = Environment.GetEnvironmentVariable("AUTH_JWT_AUDIENCE") ?? "market-api";
@@ -38,8 +35,8 @@ public static class AuthServiceJwksExtensions
 
         services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, AuthServiceJwtPostConfigure>();
 
-        services.AddAuthentication()
-            .AddJwtBearer(AuthServiceScheme, options =>
+        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+            .AddJwtBearer(options =>
             {
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
@@ -67,12 +64,12 @@ public static class AuthServiceJwksExtensions
                 };
             });
 
-        return true;
+        services.AddAuthorization();
     }
 }
 
 /// <summary>
-/// Post-configures JwtBearerOptions to wire up the JWKS key manager for the AuthService scheme.
+/// Post-configures JwtBearerOptions to wire up the JWKS key manager for the default Bearer scheme.
 /// </summary>
 internal sealed class AuthServiceJwtPostConfigure : IPostConfigureOptions<JwtBearerOptions>
 {
@@ -85,7 +82,7 @@ internal sealed class AuthServiceJwtPostConfigure : IPostConfigureOptions<JwtBea
 
     public void PostConfigure(string? name, JwtBearerOptions options)
     {
-        if (name != AuthServiceJwksExtensions.AuthServiceScheme)
+        if (name != JwtBearerDefaults.AuthenticationScheme)
             return;
 
         options.TokenValidationParameters.IssuerSigningKeyResolver =
