@@ -36,6 +36,8 @@ services:
       AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
       # Admin authorization (address allowlist)
       ADMIN_ADDRESSES: ${ADMIN_ADDRESSES:-}
+      # Admin CORS (comma-separated origins, or "*" for all)
+      ADMIN_CORS_ALLOWED_ORIGINS: ${ADMIN_CORS_ALLOWED_ORIGINS:-*}
     env_file:
       - .env
     volumes:
