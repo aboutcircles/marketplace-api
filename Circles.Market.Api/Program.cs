@@ -3,6 +3,7 @@ using System.Threading.RateLimiting;
 using Circles.Market.Api;
 using Circles.Market.Api.Admin;
 using Circles.Market.Api.Auth;
+using Circles.Market.Shared.Auth;
 using Circles.Market.Api.Cart;
 using Circles.Market.Api.Cart.Validation;
 using Circles.Market.Api.Fulfillment;

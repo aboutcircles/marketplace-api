@@ -26,19 +26,16 @@ services:
       IPFS_RPC_URL: ${IPFS_RPC_URL}
       IPFS_RPC_BEARER: ${IPFS_RPC_BEARER}
       IPFS_GATEWAY_URL: ${IPFS_GATEWAY_URL}
-      MARKET_JWT_SECRET: ${MARKET_JWT_SECRET}
-      MARKET_AUTH_ALLOWED_DOMAINS: ${MARKET_AUTH_ALLOWED_DOMAINS}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
-      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
-      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
       ODOO_ADMIN_INTERNAL_URL: http://market-adapter-odoo:${MARKET_ODOO_ADMIN_PORT}
       CODEDISP_ADMIN_INTERNAL_URL: http://market-adapter-codedispenser:${MARKET_CODEDISP_ADMIN_PORT}
       ADMIN_PROXY_ALLOWED_HOSTS: market-adapter-odoo,market-adapter-codedispenser,localhost,127.0.0.1
-      # Auth-service JWKS (RS256, opt-in: set AUTH_SERVICE_URL to enable dual-scheme)
-      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-}
+      # Auth-service JWKS (RS256, sole authentication)
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
       AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
       AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
+      # Admin authorization (address allowlist)
+      ADMIN_ADDRESSES: ${ADMIN_ADDRESSES:-}
     env_file:
       - .env
     volumes:
@@ -94,13 +91,14 @@ services:
       POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_ODOO};Username=${DB_ODOO_USER};Password=${DB_ODOO_PASSWORD}
       CIRCLES_SERVICE_KEY: ${CIRCLES_SERVICE_KEY}
       ODOO_ADMIN_PORT: ${MARKET_ODOO_ADMIN_PORT}
-      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
-      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
-      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
     env_file:
       - .env
     networks:
       - internal
+      - egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -148,13 +146,14 @@ services:
       CIRCLES_SERVICE_KEY: ${CIRCLES_SERVICE_KEY}
       CODE_POOLS_DIR: ${CODE_POOLS_DIR}
       CODEDISP_ADMIN_PORT: ${MARKET_CODEDISP_ADMIN_PORT}
-      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
-      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
-      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
     env_file:
       - .env
     networks:
       - internal
+      - egress
     depends_on:
       postgres:
         condition: service_healthy

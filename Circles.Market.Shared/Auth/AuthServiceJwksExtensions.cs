@@ -1,23 +1,17 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
-namespace Circles.Market.Api.Auth;
+namespace Circles.Market.Shared.Auth;
 
 /// <summary>
-/// JWT authentication using RS256/JWKS from the centralized auth service (DigitalOcean).
-/// Registers as the default "Bearer" scheme. Clients authenticate via the auth-service
-/// challenge/verify flow and send: Authorization: Bearer &lt;auth-service-jwt&gt;
-///
-/// Requires AUTH_SERVICE_URL to be set. The JWKS public keys are fetched from
-/// {AUTH_SERVICE_URL}/.well-known/jwks.json and cached for 10 minutes.
+/// Registers auth-service JWKS (RS256) as the default Bearer authentication scheme.
+/// Requires AUTH_SERVICE_URL environment variable.
 /// </summary>
 public static class AuthServiceJwksExtensions
 {
-    /// <summary>
-    /// Adds auth-service JWKS as the default Bearer authentication scheme.
-    /// Requires AUTH_SERVICE_URL to be set.
-    /// </summary>
     public static void AddAuthServiceJwks(this IServiceCollection services)
     {
         string authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
@@ -47,7 +41,6 @@ public static class AuthServiceJwksExtensions
                     ValidIssuer = issuer,
                     ValidAudience = audience,
                     ClockSkew = TimeSpan.FromSeconds(30)
-                    // IssuerSigningKeyResolver is set in AuthServiceJwtPostConfigure
                 };
 
                 options.Events = new JwtBearerEvents
@@ -68,9 +61,6 @@ public static class AuthServiceJwksExtensions
     }
 }
 
-/// <summary>
-/// Post-configures JwtBearerOptions to wire up the JWKS key manager for the default Bearer scheme.
-/// </summary>
 internal sealed class AuthServiceJwtPostConfigure : IPostConfigureOptions<JwtBearerOptions>
 {
     private readonly JwksKeyManager _keyManager;
