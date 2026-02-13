@@ -6,6 +6,7 @@ using Circles.Market.Adapters.Odoo.Db;
 using Circles.Market.Auth.Siwe;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
+using Prometheus;
 
 var publicBuilder = WebApplication.CreateBuilder(args);
 
@@ -92,6 +93,8 @@ if (!hasUrls)
     }
     publicApp.Urls.Add($"http://0.0.0.0:{port}");
 }
+
+publicApp.UseHttpMetrics();
 
 // Health endpoint for orchestration
 publicApp.MapGet("/health", () => Results.Json(new { ok = true }));
@@ -448,6 +451,8 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
                 statusCode: 500);
         }
     });
+
+publicApp.MapMetrics();
 
 var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
