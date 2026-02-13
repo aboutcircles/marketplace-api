@@ -6,6 +6,7 @@ using Circles.Market.Adapters.Odoo.Db;
 using Circles.Market.Auth.Siwe;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
+using Circles.Market.Shared.Auth;
 using Prometheus;
 
 var publicBuilder = WebApplication.CreateBuilder(args);
@@ -461,12 +462,7 @@ adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("ODO
 adminBuilder.Services.AddHttpClient();
 adminBuilder.Services.AddSingleton<IOdooConnectionResolver>(sp =>
     new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
-adminBuilder.Services.AddAdminJwtValidation(new SiweAuthOptions
-{
-    JwtSecretEnv = "ADMIN_JWT_SECRET",
-    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
-    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE"
-}, AdminAuthConstants.Scheme);
+adminBuilder.Services.AddAuthServiceJwks();
 
 var adminApp = adminBuilder.Build();
 adminApp.UseAuthentication();
