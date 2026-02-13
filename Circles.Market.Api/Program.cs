@@ -341,32 +341,28 @@ adminBuilder.Services.AddAuthorization(options =>
     });
 });
 
-// Admin CORS: dev-friendly, prod-safe
+// Admin CORS: allow-list via env, "*" for open, dev defaults
 var adminCorsOrigins = Environment.GetEnvironmentVariable("ADMIN_CORS_ALLOWED_ORIGINS");
-if (!string.IsNullOrWhiteSpace(adminCorsOrigins))
+adminBuilder.Services.AddCors(options =>
 {
-    adminBuilder.Services.AddCors(options =>
+    options.AddPolicy("AdminCors", policy =>
     {
-        options.AddPolicy("AdminCors", policy =>
+        if (string.Equals(adminCorsOrigins?.Trim(), "*"))
         {
-            policy.WithOrigins(adminCorsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                .AllowAnyMethod()
-                .AllowAnyHeader();
-        });
-    });
-}
-else if (adminBuilder.Environment.IsDevelopment())
-{
-    adminBuilder.Services.AddCors(options =>
-    {
-        options.AddPolicy("AdminCors", policy =>
+            policy.AllowAnyOrigin();
+        }
+        else if (!string.IsNullOrWhiteSpace(adminCorsOrigins))
         {
-            policy.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
-                .AllowAnyMethod()
-                .AllowAnyHeader();
-        });
+            policy.WithOrigins(adminCorsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+        else
+        {
+            // Dev fallback
+            policy.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173");
+        }
+        policy.AllowAnyMethod().AllowAnyHeader();
     });
-}
+});
 
 adminBuilder.Services.AddHttpClient();
 
@@ -417,12 +413,7 @@ adminBuilder.Services.AddHttpClient("codedisp-admin", client =>
 
 var adminApp = adminBuilder.Build();
 
-// Enable CORS for admin app (only if configured or in dev)
-var adminCorsConfigured = !string.IsNullOrWhiteSpace(adminCorsOrigins) || adminApp.Environment.IsDevelopment();
-if (adminCorsConfigured)
-{
-    adminApp.UseCors("AdminCors");
-}
+adminApp.UseCors("AdminCors");
 
 adminApp.UseAuthentication();
 adminApp.UseAuthorization();
