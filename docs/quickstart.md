@@ -12,7 +12,7 @@ This guide helps you get the Circles.Market environment up and running quickly.
 
 1. **Enter the project directory:**
    ```bash
-   cd Circles.Market
+   cd deployment
    ```
 
 2. **Prepare your environment file:**

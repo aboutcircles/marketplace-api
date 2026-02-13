@@ -3,7 +3,6 @@ using System.Threading.RateLimiting;
 using Circles.Market.Api;
 using Circles.Market.Api.Admin;
 using Circles.Market.Api.Auth;
-using Circles.Market.Auth.Siwe;
 using Circles.Market.Api.Cart;
 using Circles.Market.Api.Cart.Validation;
 using Circles.Market.Api.Fulfillment;
@@ -242,26 +241,10 @@ publicBuilder.Services.AddCors(options =>
     );
 });
 
-// Auth: JWT + challenge store
-var publicAuthOptions = new SiweAuthOptions
-{
-    AllowedDomainsEnv = "MARKET_AUTH_ALLOWED_DOMAINS",
-    PublicBaseUrlEnv = "PUBLIC_BASE_URL",
-    ExternalBaseUrlEnv = "EXTERNAL_BASE_URL",
-    JwtSecretEnv = "MARKET_JWT_SECRET",
-    JwtIssuerEnv = "MARKET_JWT_ISSUER",
-    JwtAudienceEnv = "MARKET_JWT_AUDIENCE",
-    RequirePublicBaseUrl = false,
-    RequireAllowlist = false
-};
-
-publicBuilder.Services.AddSiweJwtAuth(publicAuthOptions);
-publicBuilder.Services.AddSiweAuthService(
-    publicAuthOptions,
-    sp => new PostgresAuthChallengeStore(
-        Environment.GetEnvironmentVariable("POSTGRES_CONNECTION")
-        ?? throw new Exception("POSTGRES_CONNECTION env variable is required"),
-        sp.GetRequiredService<ILogger<PostgresAuthChallengeStore>>()));
+// Auth: auth-service JWKS (RS256) — sole buyer authentication
+// Clients authenticate via the auth-service (DO) challenge/verify flow
+// and send: Authorization: Bearer <auth-service-jwt>
+publicBuilder.Services.AddAuthServiceJwks();
 
 var publicApp = publicBuilder.Build();
 
@@ -272,6 +255,8 @@ publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_RPC_BEAR
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_GATEWAY_URL", SafeUrl(ipfsGatewayUrl));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "POSTGRES_CONNECTION", SafeConnectionString(pgConn!));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "DB_AUTO_MIGRATE", autoMigrate);
+publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "AUTH_SERVICE_URL",
+    Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "[MISSING]");
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "CATALOG_AVATAR_PROFILE_TIMEOUT_MS",
     Environment.GetEnvironmentVariable("CATALOG_AVATAR_PROFILE_TIMEOUT_MS") ?? "[unset]");
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "ASPNETCORE_URLS",
@@ -322,7 +307,7 @@ publicApp.UseHttpMetrics();
 publicApp.MapServiceApi();
 
 publicApp.MapCartApi();
-publicApp.MapSiweAuthApi("/api/auth", "Sign in to Circles Market", MarketConstants.ContentTypes.JsonLdUtf8);
+publicApp.MapAuthProxy("/api/auth");
 publicApp.MapPinApi();
 publicApp.MapInventoryApi();
 publicApp.MapCanonicalizeApi();
@@ -332,17 +317,28 @@ var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
 adminBuilder.Logging.AddConsole();
 
-var adminAuthOptions = new SiweAuthOptions
+// Admin auth: auth-service JWKS (same as buyer) + address allowlist
+var adminAddressesRaw = Environment.GetEnvironmentVariable("ADMIN_ADDRESSES") ?? "";
+var adminAddresses = new HashSet<string>(
+    adminAddressesRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(a => a.ToLowerInvariant()),
+    StringComparer.OrdinalIgnoreCase);
+
+adminBuilder.Services.AddAuthServiceJwks();
+
+adminBuilder.Services.AddAuthorization(options =>
 {
-    AllowedDomainsEnv = "ADMIN_AUTH_ALLOWED_DOMAINS",
-    PublicBaseUrlEnv = "ADMIN_PUBLIC_BASE_URL",
-    JwtSecretEnv = "ADMIN_JWT_SECRET",
-    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
-    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE",
-    RequirePublicBaseUrl = true,
-    RequireAllowlist = true,
-    AllowlistEnv = "ADMIN_ADDRESSES"
-};
+    options.AddPolicy("AdminOnly", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(context =>
+        {
+            var addr = context.User.FindFirst("addr")?.Value
+                       ?? context.User.FindFirst("address")?.Value;
+            return addr != null && adminAddresses.Contains(addr.ToLowerInvariant());
+        });
+    });
+});
 
 // Admin CORS: dev-friendly, prod-safe
 var adminCorsOrigins = Environment.GetEnvironmentVariable("ADMIN_CORS_ALLOWED_ORIGINS");
@@ -371,16 +367,7 @@ else if (adminBuilder.Environment.IsDevelopment())
     });
 }
 
-adminBuilder.Services.AddSiweJwtAuth(adminAuthOptions, AdminAuthConstants.Scheme);
-adminBuilder.Services.AddSiweAuthService(
-    adminAuthOptions,
-    sp => new PostgresAuthChallengeStore(
-        pgConn!,
-        sp.GetRequiredService<ILogger<PostgresAuthChallengeStore>>(),
-        tableName: "admin_auth_challenges"),
-    addressNormalizer: AddressUtils.NormalizeToLowercase,
-    addressValidator: AddressUtils.IsValidLowercaseAddress);
-adminBuilder.Services.AddAdminSignatureVerifier();
+adminBuilder.Services.AddHttpClient();
 
 int adminPort = AdminPortConfig.GetAdminPort("MARKET_ADMIN_PORT", 5090);
 adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{adminPort}");
@@ -439,7 +426,7 @@ if (adminCorsConfigured)
 adminApp.UseAuthentication();
 adminApp.UseAuthorization();
 
-adminApp.MapSiweAuthApi("/admin/auth", "Sign in as admin", AdminAuthConstants.ContentType);
+adminApp.MapAuthProxy("/admin/auth");
 adminApp.MapMarketAdminApi("/admin", pgConn!);
 
 var publicTask = publicApp.RunAsync();

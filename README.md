@@ -18,10 +18,9 @@ A .NET 10.0 implementation of the Circles Marketplace API, providing aggregated 
 
 ### Development
 
-The solution file is located at `Circles.Market/Circles.Market.sln`.
+The solution file is located at the repository root: `Circles.Market.sln`.
 
 ```bash
-cd Circles.Market
 dotnet restore
 dotnet build
 ```
@@ -31,16 +30,15 @@ dotnet build
 You can run the stack using Docker Compose:
 
 ```bash
-cd Circles.Market
+cd deployment
 cp .env.example .env
 # Edit .env to set required variables
-docker compose up -d
+docker compose up -d --build
 ```
 
 This will:
 - Build the `market-api`, `market-adapter-codedispenser`, and `market-adapter-odoo` images.
 - Start a PostgreSQL 17 instance.
-- Start an IPFS Kubo instance.
 - Initialize the databases (provisioning only) using the `init-db` service.
 
 Odoo adapter starts by default; it returns 404 until you configure `odoo_connections` via the admin API.
@@ -59,11 +57,11 @@ Default ports:
 - IPFS Gateway: `28081` (on host, if not conflicting)
 - PostgreSQL: `25433` (on host)
 
-You can customize the configuration by creating a `.env` file in the `Circles.Market` directory.
-
 ## Documentation
 
-- [Circles.Market.Api Documentation](Circles.Market.Api/README.md)
+- [Getting Started & Troubleshooting](docs/quickstart.md)
+- [Operations & DB Configuration Guide](docs/ops.md)
+- [Architecture & Ownership](docs/architecture.md)
 - [Configuration Guide](Circles.Market.Api/configuration.md)
 
 ## License
