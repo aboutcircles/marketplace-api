@@ -236,7 +236,7 @@ The Market API supports an optional second authentication scheme using RS256/JWK
 
 ```bash
 # Enable by setting AUTH_SERVICE_URL (empty or unset = disabled)
-export AUTH_SERVICE_URL="https://staging.circlesubi.network/auth"
+export AUTH_SERVICE_URL="https://circles-auth-service-prod-oa4ea.ondigitalocean.app/auth"
 export AUTH_JWT_ISSUER="circles-auth"     # default: circles-auth
 export AUTH_JWT_AUDIENCE="market-api"      # default: market-api
 ```
