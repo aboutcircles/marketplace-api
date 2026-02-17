@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Circles.Market.Api.Inventory;
 using Circles.Market.Api.Routing;
 using Circles.Profiles.Market;
 using Circles.Profiles.Models.Market;
@@ -35,9 +36,11 @@ public static class OperatorCatalogEndpoint
         int? pageSize,
         string? cursor,
         int? offset,
+        bool? includeTotalAvailability,
         HttpContext ctx,
         IMarketRouteStore routes,
         OperatorCatalogService opCatalog,
+        ILiveInventoryClient inventoryClient,
         CancellationToken ct,
         ILogger? logger = null)
     {
@@ -172,7 +175,14 @@ public static class OperatorCatalogEndpoint
             // Rewrite offer feed URLs to point to the Market API endpoints
             // so clients consume a uniform, validated interface instead of arbitrary upstream URLs.
             string baseUrl = ResolvePublicBaseUrl(ctx);
-            await ReplaceInventoryFeedUrlsAsync(page, chain, baseUrl, routes, ct);
+            bool fetchInventory = includeTotalAvailability == true;
+            
+            // Store totalAvailability values separately if fetching inventory
+            Dictionary<string, Dictionary<string, long?>>? totalAvailabilities = fetchInventory
+                ? new Dictionary<string, Dictionary<string, long?>>()
+                : null;
+            
+            await ReplaceInventoryFeedUrlsAsync(page, chain, baseUrl, routes, inventoryClient, fetchInventory, totalAvailabilities, logger, ct);
 
             var aggPayload = new AggregatedCatalog
             {
@@ -184,8 +194,26 @@ public static class OperatorCatalogEndpoint
                 Errors = errors
             };
 
-            await JsonSerializer.SerializeAsync(ctx.Response.Body, aggPayload,
-                Circles.Profiles.Models.JsonSerializerOptions.JsonLd, ct);
+            if (fetchInventory && totalAvailabilities is not null)
+            {
+                // Serialize to JSON, inject totalAvailability, then write to response
+                using var ms = new MemoryStream();
+                await JsonSerializer.SerializeAsync(ms, aggPayload,
+                    Circles.Profiles.Models.JsonSerializerOptions.JsonLd, ct);
+                
+                ms.Position = 0;
+                var jsonDoc = await JsonDocument.ParseAsync(ms, cancellationToken: ct);
+                
+                var modifiedJson = InjectTotalAvailability(jsonDoc, totalAvailabilities);
+                
+                await ctx.Response.Body.WriteAsync(System.Text.Encoding.UTF8.GetBytes(modifiedJson), ct);
+            }
+            else
+            {
+                // Normal serialization without totalAvailability
+                await JsonSerializer.SerializeAsync(ctx.Response.Body, aggPayload,
+                    Circles.Profiles.Models.JsonSerializerOptions.JsonLd, ct);
+            }
 
             logger?.LogInformation(
                 "Operator catalog response: avatarsScanned={AvCount} pageCount={PageCount} totalProducts={Total} errors={ErrCount}",
@@ -224,6 +252,10 @@ public static class OperatorCatalogEndpoint
         long chain,
         string baseUrl,
         IMarketRouteStore routes,
+        ILiveInventoryClient inventoryClient,
+        bool fetchInventory,
+        Dictionary<string, Dictionary<string, long?>>? totalAvailabilities,
+        ILogger? logger,
         CancellationToken ct)
     {
         if (page.Count <= 0)
@@ -288,6 +320,75 @@ public static class OperatorCatalogEndpoint
                     Instrument = offer.PotentialAction?.Instrument
                 };
 
+                // Fetch totalAvailability if requested
+                long? totalAvailability = null;
+                if (fetchInventory)
+                {
+                    if (isOneOff)
+                    {
+                        // For one-off offers: 1 if not sold, 0 if sold
+                        // Check if this SKU has been sold by looking at inventory upstream
+                        if (!string.IsNullOrWhiteSpace(invUpstream))
+                        {
+                            try
+                            {
+                                var (isError, error, qv) = await inventoryClient.FetchInventoryAsync(invUpstream, ct);
+                                if (isError || qv is null)
+                                {
+                                    logger?.LogWarning("Failed to fetch inventory for one-off SKU {Sku}: {Error}", sku, error);
+                                    totalAvailability = 1; // Default to available if fetch fails
+                                }
+                                else
+                                {
+                                    totalAvailability = qv.Value > 0 ? 1 : 0;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                logger?.LogWarning(ex, "Exception fetching inventory for one-off SKU {Sku}", sku);
+                                totalAvailability = 1; // Default to available if exception
+                            }
+                        }
+                        else
+                        {
+                            // No upstream configured, default to 1
+                            totalAvailability = 1;
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(invUpstream))
+                    {
+                        // For regular offers: fetch from inventory feed
+                        try
+                        {
+                            var (isError, error, qv) = await inventoryClient.FetchInventoryAsync(invUpstream, ct);
+                            if (isError || qv is null)
+                            {
+                                logger?.LogWarning("Failed to fetch inventory for SKU {Sku}: {Error}", sku, error);
+                            }
+                            else
+                            {
+                                totalAvailability = qv.Value;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            logger?.LogWarning(ex, "Exception fetching inventory for SKU {Sku}", sku);
+                        }
+                    }
+                    
+                    // Store totalAvailability in dictionary for later JSON injection
+                    if (totalAvailability.HasValue && totalAvailabilities is not null)
+                    {
+                        string key = $"{sellerAddr}:{sku}";
+                        if (!totalAvailabilities.ContainsKey(key))
+                        {
+                            totalAvailabilities[key] = new Dictionary<string, long?>();
+                        }
+                        // Store by offer index (we'll use this to match offers when injecting)
+                        totalAvailabilities[key][newOffers.Count.ToString()] = totalAvailability.Value;
+                    }
+                }
+
                 newOffers.Add(offer with
                 {
                     CirclesAvailabilityFeed = availability,
@@ -299,6 +400,197 @@ public static class OperatorCatalogEndpoint
 
             var newProd = prod with { Offers = newOffers };
             page[i] = item with { Product = newProd };
+        }
+    }
+
+    private static string InjectTotalAvailability(JsonDocument jsonDoc, Dictionary<string, Dictionary<string, long?>> totalAvailabilities)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false }))
+        {
+            WriteElementWithTotalAvailability(jsonDoc.RootElement, writer, totalAvailabilities);
+        }
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static void WriteElementWithTotalAvailability(
+        JsonElement element,
+        Utf8JsonWriter writer,
+        Dictionary<string, Dictionary<string, long?>> totalAvailabilities)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                
+                // Check if this is a product item (has seller and product with sku)
+                string? seller = null;
+                string? sku = null;
+                
+                if (element.TryGetProperty("seller", out var sellerProp))
+                {
+                    seller = sellerProp.GetString();
+                }
+                
+                if (element.TryGetProperty("product", out var productProp) &&
+                    productProp.TryGetProperty("sku", out var skuProp))
+                {
+                    sku = skuProp.GetString();
+                }
+                
+                string? productKey = null;
+                if (seller != null && sku != null)
+                {
+                    productKey = $"{Utils.NormalizeAddr(seller)}:{sku.Trim().ToLowerInvariant()}";
+                }
+                
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    
+                    // If this is the "offers" array and we have totalAvailability data for this product
+                    if (property.Name == "offers" && productKey != null &&
+                        totalAvailabilities.TryGetValue(productKey, out var offerAvailabilities))
+                    {
+                        WriteOffersWithTotalAvailability(property.Value, writer, offerAvailabilities);
+                    }
+                    else
+                    {
+                        WriteElementWithTotalAvailability(property.Value, writer, totalAvailabilities);
+                    }
+                }
+                
+                writer.WriteEndObject();
+                break;
+                
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    WriteElementWithTotalAvailability(item, writer, totalAvailabilities);
+                }
+                writer.WriteEndArray();
+                break;
+                
+            case JsonValueKind.String:
+                writer.WriteStringValue(element.GetString());
+                break;
+                
+            case JsonValueKind.Number:
+                if (element.TryGetInt64(out var longValue))
+                {
+                    writer.WriteNumberValue(longValue);
+                }
+                else if (element.TryGetDecimal(out var decimalValue))
+                {
+                    writer.WriteNumberValue(decimalValue);
+                }
+                else
+                {
+                    writer.WriteNumberValue(element.GetDouble());
+                }
+                break;
+                
+            case JsonValueKind.True:
+                writer.WriteBooleanValue(true);
+                break;
+                
+            case JsonValueKind.False:
+                writer.WriteBooleanValue(false);
+                break;
+                
+            case JsonValueKind.Null:
+                writer.WriteNullValue();
+                break;
+        }
+    }
+
+    private static void WriteOffersWithTotalAvailability(
+        JsonElement offersArray,
+        Utf8JsonWriter writer,
+        Dictionary<string, long?> offerAvailabilities)
+    {
+        writer.WriteStartArray();
+        
+        int offerIndex = 0;
+        foreach (var offer in offersArray.EnumerateArray())
+        {
+            writer.WriteStartObject();
+            
+            // Copy all existing properties
+            foreach (var property in offer.EnumerateObject())
+            {
+                writer.WritePropertyName(property.Name);
+                WriteJsonElement(property.Value, writer);
+            }
+            
+            // Add totalAvailability if we have it for this offer
+            if (offerAvailabilities.TryGetValue(offerIndex.ToString(), out var totalAvail) && totalAvail.HasValue)
+            {
+                writer.WritePropertyName("totalAvailability");
+                writer.WriteNumberValue(totalAvail.Value);
+            }
+            
+            writer.WriteEndObject();
+            offerIndex++;
+        }
+        
+        writer.WriteEndArray();
+    }
+
+    private static void WriteJsonElement(JsonElement element, Utf8JsonWriter writer)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteJsonElement(property.Value, writer);
+                }
+                writer.WriteEndObject();
+                break;
+                
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    WriteJsonElement(item, writer);
+                }
+                writer.WriteEndArray();
+                break;
+                
+            case JsonValueKind.String:
+                writer.WriteStringValue(element.GetString());
+                break;
+                
+            case JsonValueKind.Number:
+                if (element.TryGetInt64(out var longValue))
+                {
+                    writer.WriteNumberValue(longValue);
+                }
+                else if (element.TryGetDecimal(out var decimalValue))
+                {
+                    writer.WriteNumberValue(decimalValue);
+                }
+                else
+                {
+                    writer.WriteNumberValue(element.GetDouble());
+                }
+                break;
+                
+            case JsonValueKind.True:
+                writer.WriteBooleanValue(true);
+                break;
+                
+            case JsonValueKind.False:
+                writer.WriteBooleanValue(false);
+                break;
+                
+            case JsonValueKind.Null:
+                writer.WriteNullValue();
+                break;
         }
     }
 
