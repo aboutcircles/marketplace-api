@@ -28,6 +28,17 @@ namespace Circles.Market.Api.Catalog;
 /// </summary>
 public static class OperatorCatalogEndpoint
 {
+    /// <summary>
+    /// Helper record to store totalAvailability values for a specific product offer.
+    /// Key: "{sellerAddress}:{sku}", Value: Dictionary mapping offer index to totalAvailability value.
+    /// </summary>
+    private record ProductOfferAvailabilities
+    {
+        public required string SellerAddress { get; init; }
+        public required string Sku { get; init; }
+        public Dictionary<int, long> OfferAvailabilities { get; init; } = new();
+    }
+
     public static async Task Handle(
         string op,
         long? chainId,
@@ -178,8 +189,8 @@ public static class OperatorCatalogEndpoint
             bool fetchInventory = includeTotalAvailability == true;
             
             // Store totalAvailability values separately if fetching inventory
-            Dictionary<string, Dictionary<string, long?>>? totalAvailabilities = fetchInventory
-                ? new Dictionary<string, Dictionary<string, long?>>()
+            Dictionary<string, ProductOfferAvailabilities>? totalAvailabilities = fetchInventory
+                ? new Dictionary<string, ProductOfferAvailabilities>()
                 : null;
             
             await ReplaceInventoryFeedUrlsAsync(page, chain, baseUrl, routes, inventoryClient, fetchInventory, totalAvailabilities, logger, ct);
@@ -254,7 +265,7 @@ public static class OperatorCatalogEndpoint
         IMarketRouteStore routes,
         ILiveInventoryClient inventoryClient,
         bool fetchInventory,
-        Dictionary<string, Dictionary<string, long?>>? totalAvailabilities,
+        Dictionary<string, ProductOfferAvailabilities>? totalAvailabilities,
         ILogger? logger,
         CancellationToken ct)
     {
@@ -299,7 +310,8 @@ public static class OperatorCatalogEndpoint
                 : (a + (b.StartsWith('/') ? b : "/" + b));
 
             var newOffers = new List<SchemaOrgOffer>(prod.Offers.Count);
-
+            
+            int offerIndex = 0; // Track offer index for matching during JSON injection
             foreach (var offer in prod.Offers)
             {
                 string? availability = emitAvailability
@@ -335,8 +347,8 @@ public static class OperatorCatalogEndpoint
                                 var (isError, error, qv) = await inventoryClient.FetchInventoryAsync(invUpstream, ct);
                                 if (isError || qv is null)
                                 {
-                                    logger?.LogWarning("Failed to fetch inventory for one-off SKU {Sku}: {Error}", sku, error);
-                                    totalAvailability = 1; // Default to available if fetch fails
+                                    logger?.LogWarning("Failed to fetch inventory for one-off SKU {Sku}: {Error} - omitting totalAvailability", sku, error);
+                                    // Omit totalAvailability on fetch failure rather than defaulting
                                 }
                                 else
                                 {
@@ -345,13 +357,13 @@ public static class OperatorCatalogEndpoint
                             }
                             catch (Exception ex)
                             {
-                                logger?.LogWarning(ex, "Exception fetching inventory for one-off SKU {Sku}", sku);
-                                totalAvailability = 1; // Default to available if exception
+                                logger?.LogWarning(ex, "Exception fetching inventory for one-off SKU {Sku} - omitting totalAvailability", sku);
+                                // Omit totalAvailability on exception rather than defaulting
                             }
                         }
                         else
                         {
-                            // No upstream configured, default to 1
+                            // No upstream configured, assume available
                             totalAvailability = 1;
                         }
                     }
@@ -363,7 +375,8 @@ public static class OperatorCatalogEndpoint
                             var (isError, error, qv) = await inventoryClient.FetchInventoryAsync(invUpstream, ct);
                             if (isError || qv is null)
                             {
-                                logger?.LogWarning("Failed to fetch inventory for SKU {Sku}: {Error}", sku, error);
+                                logger?.LogWarning("Failed to fetch inventory for SKU {Sku}: {Error} - omitting totalAvailability", sku, error);
+                                // Omit totalAvailability on fetch failure
                             }
                             else
                             {
@@ -372,20 +385,26 @@ public static class OperatorCatalogEndpoint
                         }
                         catch (Exception ex)
                         {
-                            logger?.LogWarning(ex, "Exception fetching inventory for SKU {Sku}", sku);
+                            logger?.LogWarning(ex, "Exception fetching inventory for SKU {Sku} - omitting totalAvailability", sku);
+                            // Omit totalAvailability on exception
                         }
                     }
                     
-                    // Store totalAvailability in dictionary for later JSON injection
+                    // Store totalAvailability in dictionary for later JSON injection (only if we have a value)
                     if (totalAvailability.HasValue && totalAvailabilities is not null)
                     {
                         string key = $"{sellerAddr}:{sku}";
-                        if (!totalAvailabilities.ContainsKey(key))
+                        if (!totalAvailabilities.TryGetValue(key, out var productAvails))
                         {
-                            totalAvailabilities[key] = new Dictionary<string, long?>();
+                            productAvails = new ProductOfferAvailabilities
+                            {
+                                SellerAddress = sellerAddr,
+                                Sku = sku
+                            };
+                            totalAvailabilities[key] = productAvails;
                         }
-                        // Store by offer index (we'll use this to match offers when injecting)
-                        totalAvailabilities[key][newOffers.Count.ToString()] = totalAvailability.Value;
+                        // Store by offer index (current position before adding)
+                        productAvails.OfferAvailabilities[offerIndex] = totalAvailability.Value;
                     }
                 }
 
@@ -396,6 +415,8 @@ public static class OperatorCatalogEndpoint
                     CirclesFulfillmentEndpoint = null,
                     PotentialAction = action
                 });
+                
+                offerIndex++; // Increment after adding offer
             }
 
             var newProd = prod with { Offers = newOffers };
@@ -403,7 +424,7 @@ public static class OperatorCatalogEndpoint
         }
     }
 
-    private static string InjectTotalAvailability(JsonDocument jsonDoc, Dictionary<string, Dictionary<string, long?>> totalAvailabilities)
+    private static string InjectTotalAvailability(JsonDocument jsonDoc, Dictionary<string, ProductOfferAvailabilities> totalAvailabilities)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false }))
@@ -416,7 +437,7 @@ public static class OperatorCatalogEndpoint
     private static void WriteElementWithTotalAvailability(
         JsonElement element,
         Utf8JsonWriter writer,
-        Dictionary<string, Dictionary<string, long?>> totalAvailabilities)
+        Dictionary<string, ProductOfferAvailabilities> totalAvailabilities)
     {
         switch (element.ValueKind)
         {
@@ -508,7 +529,7 @@ public static class OperatorCatalogEndpoint
     private static void WriteOffersWithTotalAvailability(
         JsonElement offersArray,
         Utf8JsonWriter writer,
-        Dictionary<string, long?> offerAvailabilities)
+        ProductOfferAvailabilities productAvails)
     {
         writer.WriteStartArray();
         
@@ -525,10 +546,10 @@ public static class OperatorCatalogEndpoint
             }
             
             // Add totalAvailability if we have it for this offer
-            if (offerAvailabilities.TryGetValue(offerIndex.ToString(), out var totalAvail) && totalAvail.HasValue)
+            if (productAvails.OfferAvailabilities.TryGetValue(offerIndex, out var totalAvail))
             {
                 writer.WritePropertyName("totalAvailability");
-                writer.WriteNumberValue(totalAvail.Value);
+                writer.WriteNumberValue(totalAvail);
             }
             
             writer.WriteEndObject();
