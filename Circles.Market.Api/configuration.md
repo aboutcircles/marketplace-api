@@ -49,7 +49,7 @@ Repo layout assumption:
 The easiest way to get a full environment (Postgres, IPFS, Market API, CodeDispenser) is using the provided `docker-compose.yml`.
 
 ```bash
-cd Circles.Market
+cd marketplace-api
 cp .env.example .env
 # Edit .env to set MARKET_JWT_SECRET and other required vars
 docker compose up -d
