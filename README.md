@@ -65,6 +65,7 @@ You can customize the configuration by creating a `.env` file in the `Circles.Ma
 
 - [Circles.Market.Api Documentation](Circles.Market.Api/README.md)
 - [Configuration Guide](Circles.Market.Api/configuration.md)
+- [Fulfillment workflow](fulfillment.md)
 
 ## License
 
