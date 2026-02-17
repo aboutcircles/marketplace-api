@@ -30,6 +30,9 @@ internal class AlwaysConfiguredRouteStore : IMarketRouteStore
             OfferType: "odoo",
             IsOneOff: false,
             Enabled: true));
+
+    public Task<IReadOnlyList<MarketSellerAddress>> GetActiveSellersAsync(CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<MarketSellerAddress>>(Array.Empty<MarketSellerAddress>());
 }
 
 [TestFixture]
