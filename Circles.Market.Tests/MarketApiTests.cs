@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Circles.Market.Api.Catalog;
+using Circles.Market.Api.Inventory;
 using Circles.Market.Api.Routing;
 using Circles.Market.Tests.Mocks;
 using Circles.Profiles.Aggregation;
@@ -30,6 +31,9 @@ internal class AlwaysConfiguredRouteStore : IMarketRouteStore
             OfferType: "odoo",
             IsOneOff: false,
             Enabled: true));
+
+    public Task<IReadOnlyList<MarketSellerAddress>> GetActiveSellersAsync(CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<MarketSellerAddress>>(new List<MarketSellerAddress>());
 }
 
 [TestFixture]
@@ -141,7 +145,8 @@ public class MarketApiTests
         string cur = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new { start = -1 }));
         ctx.Response.Body = new MemoryStream();
 
-        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, cur, null, ctx, new AlwaysConfiguredRouteStore(), opCatalog: null!, CancellationToken.None);
+        var mockInventoryClient = new Mock<ILiveInventoryClient>();
+        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, cur, null, null, ctx, new AlwaysConfiguredRouteStore(), null!, mockInventoryClient.Object, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status400BadRequest));
         ctx.Response.Body.Position = 0;
@@ -169,7 +174,8 @@ public class MarketApiTests
         ctx.Response.Body = new MemoryStream();
 
         var routes = new AlwaysConfiguredRouteStore();
-        await OperatorCatalogEndpoint.Handle("0x1234567890123456789012345678901234567890", 100, 0, (long?)null, 10, null, 0, ctx, routes, svc, CancellationToken.None);
+        var mockInventoryClient = new Mock<ILiveInventoryClient>();
+        await OperatorCatalogEndpoint.Handle("0x1234567890123456789012345678901234567890", 100, 0, (long?)null, 10, null, 0, null, ctx, routes, svc, mockInventoryClient.Object, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status200OK));
         Assert.That(ctx.Response.Headers.ContainsKey("Vary"), Is.False);

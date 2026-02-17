@@ -40,6 +40,16 @@ public class MarketRouteStoreConfiguredSemanticsTests
             if (string.IsNullOrWhiteSpace(cfg.OfferType)) { return false; }
             return _offerTypesEnabled.TryGetValue(cfg.OfferType, out var enabled) && enabled;
         }
+
+        public Task<IReadOnlyList<MarketSellerAddress>> GetActiveSellersAsync(CancellationToken ct = default)
+        {
+            var sellers = _routes.Values
+                .Where(r => r.Enabled)
+                .Select(r => new MarketSellerAddress(r.ChainId, r.SellerAddress))
+                .Distinct()
+                .ToList();
+            return Task.FromResult<IReadOnlyList<MarketSellerAddress>>(sellers);
+        }
     }
 
     [Test]

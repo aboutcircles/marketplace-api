@@ -1,7 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using Circles.Market.Api.Catalog;
+using Circles.Market.Api.Inventory;
 using Microsoft.AspNetCore.Http;
+using Moq;
 
 namespace Circles.Market.Tests;
 
@@ -16,7 +18,8 @@ public class OperatorCatalogEndpointMoreTests
         ctx.Response.Body = new MemoryStream();
 
         var routes = new AlwaysConfiguredRouteStore();
-        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, "not-base64", null, ctx, routes, (Circles.Profiles.Market.OperatorCatalogService)null!, CancellationToken.None);
+        var mockInventoryClient = new Mock<ILiveInventoryClient>();
+        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, "not-base64", null, null, ctx, routes, (Circles.Profiles.Market.OperatorCatalogService)null!, mockInventoryClient.Object, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status400BadRequest));
         ctx.Response.Body.Position = 0;
@@ -33,7 +36,8 @@ public class OperatorCatalogEndpointMoreTests
         ctx.Response.Body = new MemoryStream();
 
         var routes = new AlwaysConfiguredRouteStore();
-        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, null, -1, ctx, routes, (Circles.Profiles.Market.OperatorCatalogService)null!, CancellationToken.None);
+        var mockInventoryClient = new Mock<ILiveInventoryClient>();
+        await OperatorCatalogEndpoint.Handle("0xop", 100, 0, 0, 10, null, -1, null, ctx, routes, (Circles.Profiles.Market.OperatorCatalogService)null!, mockInventoryClient.Object, CancellationToken.None);
 
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status400BadRequest));
         ctx.Response.Body.Position = 0;
