@@ -8,6 +8,7 @@ COPY Directory.Build.props* ./
 COPY Circles.Market.Api/Circles.Market.Api.csproj Circles.Market.Api/
 COPY Circles.Market.Shared/Circles.Market.Shared.csproj Circles.Market.Shared/
 COPY Circles.Market.Auth.Siwe/Circles.Market.Auth.Siwe.csproj Circles.Market.Auth.Siwe/
+COPY Circles.Market.Fulfillment.Core/Circles.Market.Fulfillment.Core.csproj Circles.Market.Fulfillment.Core/
 
 RUN dotnet restore Circles.Market.Api/Circles.Market.Api.csproj
 
@@ -15,6 +16,7 @@ RUN dotnet restore Circles.Market.Api/Circles.Market.Api.csproj
 COPY Circles.Market.Api/ Circles.Market.Api/
 COPY Circles.Market.Shared/ Circles.Market.Shared/
 COPY Circles.Market.Auth.Siwe/ Circles.Market.Auth.Siwe/
+COPY Circles.Market.Fulfillment.Core/ Circles.Market.Fulfillment.Core/
 
 RUN dotnet publish Circles.Market.Api/Circles.Market.Api.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
 

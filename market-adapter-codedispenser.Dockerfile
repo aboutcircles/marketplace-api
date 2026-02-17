@@ -8,12 +8,14 @@ COPY Directory.Build.props* ./
 COPY Circles.Market.Adapters.CodeDispenser/Circles.Market.Adapters.CodeDispenser.csproj Circles.Market.Adapters.CodeDispenser/
 COPY Circles.Market.Shared/Circles.Market.Shared.csproj Circles.Market.Shared/
 COPY Circles.Market.Auth.Siwe/Circles.Market.Auth.Siwe.csproj Circles.Market.Auth.Siwe/
+COPY Circles.Market.Fulfillment.Core/Circles.Market.Fulfillment.Core.csproj Circles.Market.Fulfillment.Core/
 RUN dotnet restore Circles.Market.Adapters.CodeDispenser/Circles.Market.Adapters.CodeDispenser.csproj
 
 # Copy the rest and publish only the adapter project
 COPY Circles.Market.Adapters.CodeDispenser/ Circles.Market.Adapters.CodeDispenser/
 COPY Circles.Market.Shared/ Circles.Market.Shared/
 COPY Circles.Market.Auth.Siwe/ Circles.Market.Auth.Siwe/
+COPY Circles.Market.Fulfillment.Core/ Circles.Market.Fulfillment.Core/
 RUN dotnet publish Circles.Market.Adapters.CodeDispenser/Circles.Market.Adapters.CodeDispenser.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final

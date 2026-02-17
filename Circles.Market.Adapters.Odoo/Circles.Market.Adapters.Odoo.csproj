@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\\Circles.Market.Auth.Siwe\\Circles.Market.Auth.Siwe.csproj" />
     <ProjectReference Include="..\Circles.Market.Shared\Circles.Market.Shared.csproj" />
+    <ProjectReference Include="..\Circles.Market.Fulfillment.Core\Circles.Market.Fulfillment.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Circles.Profiles.Models">

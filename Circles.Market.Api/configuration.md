@@ -228,6 +228,47 @@ export PORT=5678
 export ODOO_ADMIN_PORT=5688
 ```
 
+## Fulfillment idempotency / reconciliation env flags
+
+Both fulfillment adapters use run-state reconciliation keyed by:
+
+- `(chainId, seller, paymentReference)`
+
+Run states:
+
+- `started` (execution in progress)
+- `ok` (completed successfully)
+- `error` (failed; retriable)
+
+Default duplicate-call behavior:
+
+- existing `started` -> replay (`Already in progress`), no re-execution
+- existing `ok` -> replay (`Already processed`), no re-execution
+- existing `error` -> retriable (a later call may execute again)
+
+### Optional stale-started takeover (disabled by default)
+
+Use these only if you explicitly want takeover of stale in-progress runs.
+
+Odoo adapter:
+
+```bash
+export ODOO_FULFILLMENT_ALLOW_STARTED_TAKEOVER=false
+export ODOO_FULFILLMENT_STALE_MINUTES=10
+```
+
+CodeDispenser adapter:
+
+```bash
+export CODE_FULFILLMENT_ALLOW_STARTED_TAKEOVER=false
+export CODE_FULFILLMENT_STALE_MINUTES=10
+```
+
+When `*_ALLOW_STARTED_TAKEOVER=true`, a `started` run older than `*_STALE_MINUTES` may be re-acquired.
+
+> Warning: enabling stale-started takeover can permit re-execution after long-running or interrupted calls.
+> Keep disabled unless this recovery mode is an explicit operational decision.
+
 ---
 
 # More detailed configuration (scaling beyond “one local service”)
