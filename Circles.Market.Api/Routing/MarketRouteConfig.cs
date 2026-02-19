@@ -6,7 +6,8 @@ public sealed record MarketRouteConfig(
     string Sku,
     string? OfferType,
     bool IsOneOff,
-    bool Enabled)
+    bool Enabled,
+    long? TotalInventory = null)
 {
     public bool IsConfigured => Enabled && (IsOneOff || !string.IsNullOrWhiteSpace(OfferType));
 }

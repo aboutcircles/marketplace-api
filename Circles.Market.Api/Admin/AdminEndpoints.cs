@@ -62,6 +62,33 @@ public static class AdminEndpoints
         return (true, body);
     }
 
+    private static async Task<Dictionary<string, long?>> LoadRouteTotalInventoryByOfferTypeAsync(
+        string marketConn,
+        string offerType,
+        CancellationToken ct)
+    {
+        var result = new Dictionary<string, long?>(StringComparer.Ordinal);
+        await using var conn = new NpgsqlConnection(marketConn);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT chain_id, seller_address, sku, total_inventory
+FROM market_service_routes
+WHERE offer_type = $1
+  AND enabled = true";
+        cmd.Parameters.AddWithValue(offerType);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            long chainId = reader.GetInt64(0);
+            string seller = reader.GetString(1).Trim().ToLowerInvariant();
+            string sku = reader.GetString(2).Trim().ToLowerInvariant();
+            long? total = reader.IsDBNull(3) ? null : reader.GetInt64(3);
+            result[$"{chainId}:{seller}:{sku}"] = total;
+        }
+
+        return result;
+    }
+
     public static void MapMarketAdminApi(this WebApplication app, string adminBasePath, string marketConn)
     {
         var group = app.MapGroup(adminBasePath).RequireAuthorization(new AuthorizeAttribute
@@ -170,7 +197,7 @@ public static class AdminEndpoints
             await using var conn = new NpgsqlConnection(marketConn);
             await conn.OpenAsync(ct);
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"SELECT chain_id, seller_address, sku, offer_type, is_one_off, enabled
+            cmd.CommandText = @"SELECT chain_id, seller_address, sku, offer_type, is_one_off, total_inventory, enabled
 FROM market_service_routes
 ORDER BY chain_id, seller_address, sku";
             await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -183,7 +210,8 @@ ORDER BY chain_id, seller_address, sku";
                     Sku = reader.GetString(2),
                     OfferType = reader.IsDBNull(3) ? null : reader.GetString(3),
                     IsOneOff = reader.GetBoolean(4),
-                    Enabled = reader.GetBoolean(5)
+                    TotalInventory = reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                    Enabled = reader.GetBoolean(6)
                 });
             }
             return Results.Json(result);
@@ -198,6 +226,8 @@ ORDER BY chain_id, seller_address, sku";
             string seller = req.Seller.Trim().ToLowerInvariant();
             string sku = req.Sku.Trim().ToLowerInvariant();
             string? offerType = string.IsNullOrWhiteSpace(req.OfferType) ? null : req.OfferType.Trim().ToLowerInvariant();
+            if (req.TotalInventory is < 0)
+                return Results.BadRequest(new { error = "totalInventory must be >= 0" });
 
             if (!req.IsOneOff && string.IsNullOrWhiteSpace(offerType))
                 return Results.BadRequest(new { error = "offerType is required when isOneOff=false" });
@@ -205,22 +235,28 @@ ORDER BY chain_id, seller_address, sku";
             await using var conn = new NpgsqlConnection(marketConn);
             await conn.OpenAsync(ct);
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, enabled)
-VALUES ($1, $2, $3, $4, $5, $6)
+            cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, total_inventory, enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
   offer_type = EXCLUDED.offer_type,
   is_one_off = EXCLUDED.is_one_off,
-  enabled = EXCLUDED.enabled";
+  total_inventory = EXCLUDED.total_inventory,
+  enabled = EXCLUDED.enabled
+RETURNING total_inventory";
             cmd.Parameters.AddWithValue(req.ChainId);
             cmd.Parameters.AddWithValue(seller);
             cmd.Parameters.AddWithValue(sku);
             cmd.Parameters.AddWithValue((object?)offerType ?? DBNull.Value);
             cmd.Parameters.AddWithValue(req.IsOneOff);
+            cmd.Parameters.AddWithValue((object?)req.TotalInventory ?? DBNull.Value);
             cmd.Parameters.AddWithValue(req.Enabled);
+
+            long? savedTotalInventory;
 
             try
             {
-                await cmd.ExecuteNonQueryAsync(ct);
+                var scalar = await cmd.ExecuteScalarAsync(ct);
+                savedTotalInventory = scalar is DBNull || scalar is null ? null : (long?)Convert.ToInt64(scalar);
             }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.ForeignKeyViolation)
             {
@@ -234,6 +270,7 @@ ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
                 Sku = sku,
                 OfferType = offerType,
                 IsOneOff = req.IsOneOff,
+                TotalInventory = savedTotalInventory,
                 Enabled = req.Enabled
             });
         });
@@ -268,6 +305,18 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             var odooClient = httpClientFactory.CreateClient("odoo-admin");
             var (ok, mappings) = await TryGetJsonAsync<List<AdminOdooProductDto>>(odooClient, "/admin/mappings", bearerHeader, ct);
             if (!ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            var totals = await LoadRouteTotalInventoryByOfferTypeAsync(marketConn, "odoo", ct);
+            if (mappings != null)
+            {
+                foreach (var m in mappings)
+                {
+                    string key = $"{m.ChainId}:{m.Seller.Trim().ToLowerInvariant()}:{m.Sku.Trim().ToLowerInvariant()}";
+                    if (totals.TryGetValue(key, out var total))
+                        m.TotalInventory = total;
+                }
+            }
+
             return Results.Json(mappings ?? new List<AdminOdooProductDto>());
         });
 
@@ -350,12 +399,16 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             if (!okPools) return Results.StatusCode(StatusCodes.Status502BadGateway);
 
             var remainingByPool = (pools ?? new List<AdminCodePoolDto>()).ToDictionary(p => p.PoolId, p => p.Remaining, StringComparer.Ordinal);
+            var totals = await LoadRouteTotalInventoryByOfferTypeAsync(marketConn, "codedispenser", ct);
             if (mappings != null)
             {
                 foreach (var m in mappings)
                 {
                     if (remainingByPool.TryGetValue(m.PoolId, out var remaining))
                         m.PoolRemaining = remaining;
+                    string key = $"{m.ChainId}:{m.Seller.Trim().ToLowerInvariant()}:{m.Sku.Trim().ToLowerInvariant()}";
+                    if (totals.TryGetValue(key, out var total))
+                        m.TotalInventory = total;
                 }
             }
 
@@ -439,6 +492,7 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
             if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku) || string.IsNullOrWhiteSpace(req.OdooProductCode))
                 return Results.BadRequest(new { error = "seller, sku, odooProductCode are required" });
+            if (req.TotalInventory is < 0) return Results.BadRequest(new { error = "totalInventory must be >= 0" });
 
             if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
                 return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
@@ -482,22 +536,27 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
 
             await using var market = new NpgsqlConnection(marketConn);
             await market.OpenAsync(ct);
+            long? savedTotalInventory;
             await using (var cmd = market.CreateCommand())
             {
-                cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, enabled)
-VALUES ($1, $2, $3, 'odoo', false, $4)
+                cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, total_inventory, enabled)
+VALUES ($1, $2, $3, 'odoo', false, $4, $5)
 ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
   offer_type = EXCLUDED.offer_type,
   is_one_off = false,
-  enabled = EXCLUDED.enabled";
+  total_inventory = EXCLUDED.total_inventory,
+  enabled = EXCLUDED.enabled
+RETURNING total_inventory";
                 cmd.Parameters.AddWithValue(req.ChainId);
                 cmd.Parameters.AddWithValue(seller);
                 cmd.Parameters.AddWithValue(sku);
+                cmd.Parameters.AddWithValue((object?)req.TotalInventory ?? DBNull.Value);
                 cmd.Parameters.AddWithValue(req.Enabled);
-                await cmd.ExecuteNonQueryAsync(ct);
+                var scalar = await cmd.ExecuteScalarAsync(ct);
+                savedTotalInventory = scalar is DBNull || scalar is null ? null : (long?)Convert.ToInt64(scalar);
             }
 
-            return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "odoo" });
+            return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "odoo", totalInventory = savedTotalInventory });
         });
 
         group.MapPost("/code-products", async (HttpContext ctx, AddCodeProductRequest req, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
@@ -505,6 +564,7 @@ ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
             if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
             if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku) || string.IsNullOrWhiteSpace(req.PoolId))
                 return Results.BadRequest(new { error = "seller, sku, poolId are required" });
+            if (req.TotalInventory is < 0) return Results.BadRequest(new { error = "totalInventory must be >= 0" });
 
             if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
                 return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
@@ -569,22 +629,27 @@ ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
 
             await using var market = new NpgsqlConnection(marketConn);
             await market.OpenAsync(ct);
+            long? savedTotalInventory;
             await using (var cmd = market.CreateCommand())
             {
-                cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, enabled)
-VALUES ($1, $2, $3, 'codedispenser', false, $4)
+                cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, total_inventory, enabled)
+VALUES ($1, $2, $3, 'codedispenser', false, $4, $5)
 ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
   offer_type = EXCLUDED.offer_type,
   is_one_off = false,
-  enabled = EXCLUDED.enabled";
+  total_inventory = EXCLUDED.total_inventory,
+  enabled = EXCLUDED.enabled
+RETURNING total_inventory";
                 cmd.Parameters.AddWithValue(req.ChainId);
                 cmd.Parameters.AddWithValue(seller);
                 cmd.Parameters.AddWithValue(sku);
+                cmd.Parameters.AddWithValue((object?)req.TotalInventory ?? DBNull.Value);
                 cmd.Parameters.AddWithValue(req.Enabled);
-                await cmd.ExecuteNonQueryAsync(ct);
+                var scalar = await cmd.ExecuteScalarAsync(ct);
+                savedTotalInventory = scalar is DBNull || scalar is null ? null : (long?)Convert.ToInt64(scalar);
             }
 
-            return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "codedispenser" });
+            return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "codedispenser", totalInventory = savedTotalInventory });
         });
     }
 }

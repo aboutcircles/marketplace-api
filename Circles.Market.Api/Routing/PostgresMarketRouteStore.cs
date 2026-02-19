@@ -46,13 +46,32 @@ CREATE TABLE IF NOT EXISTS market_service_routes (
   sku              text    NOT NULL,
   offer_type       text    NULL,
   is_one_off       boolean NOT NULL DEFAULT false,
+  total_inventory  bigint  NULL,
   enabled          boolean NOT NULL DEFAULT true,
   PRIMARY KEY (chain_id, seller_address, sku),
   CONSTRAINT ck_market_service_routes_offer_type_or_one_off
     CHECK (is_one_off OR offer_type IS NOT NULL),
+  CONSTRAINT ck_market_service_routes_total_inventory_non_negative
+    CHECK (total_inventory IS NULL OR total_inventory >= 0),
   CONSTRAINT fk_market_service_routes_offer_type
     FOREIGN KEY (offer_type) REFERENCES offer_types(offer_type)
 );
+
+ALTER TABLE market_service_routes
+  ADD COLUMN IF NOT EXISTS total_inventory bigint NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'ck_market_service_routes_total_inventory_non_negative'
+  ) THEN
+    ALTER TABLE market_service_routes
+      ADD CONSTRAINT ck_market_service_routes_total_inventory_non_negative
+      CHECK (total_inventory IS NULL OR total_inventory >= 0);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS ix_market_routes_enabled
   ON market_service_routes(enabled, chain_id, seller_address, sku);
@@ -107,7 +126,7 @@ ON CONFLICT (offer_type) DO NOTHING;
             await conn.OpenAsync(ct);
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
-SELECT chain_id, seller_address, sku, offer_type, is_one_off, enabled
+SELECT chain_id, seller_address, sku, offer_type, is_one_off, enabled, total_inventory
 FROM market_service_routes
 WHERE enabled = true
   AND chain_id = $1
@@ -127,7 +146,8 @@ LIMIT 1";
                     Sku: reader.GetString(2),
                     OfferType: reader.IsDBNull(3) ? null : reader.GetString(3),
                     IsOneOff: reader.GetBoolean(4),
-                    Enabled: reader.GetBoolean(5));
+                    Enabled: reader.GetBoolean(5),
+                    TotalInventory: reader.IsDBNull(6) ? null : reader.GetInt64(6));
             }
         }
 

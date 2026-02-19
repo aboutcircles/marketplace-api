@@ -13,6 +13,7 @@ To bring a seller's products live on the marketplace, you must understand these 
     *   `odoo`: Use Odoo ERP adapter (supports inventory, availability, and fulfillment)
     *   `codedispenser`: Use CodeDispenser adapter (supports inventory and fulfillment only)
 *   **is_one_off**: If `true`, this is a one-time sale (e.g., unique item) with no upstream adapter URL.
+*   **total_inventory**: Optional static informational value for initial stock at sale start.
 *   **inventoryFeed vs availabilityFeed**:
     *   `inventoryFeed`: Provides a quantitative stock level (e.g., "5 items left").
     *   `availabilityFeed`: Provides a simple "InStock" / "OutOfStock" status.
@@ -23,8 +24,8 @@ To bring a seller's products live on the marketplace, you must understand these 
 Routes are configured in the `circles_market_api` database, table `market_service_routes`:
 
 ```sql
-INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, enabled)
-VALUES (100, '0xseller...', 'my-sku', 'codedispenser', false, true);
+INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, total_inventory, enabled)
+VALUES (100, '0xseller...', 'my-sku', 'codedispenser', false, 250, true);
 ```
 
 The actual adapter URLs are derived from templates in `offer_types` table at runtime:
@@ -90,7 +91,7 @@ POST /admin/code-products
 Example (via Market admin port):
 ```bash
 curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
-  -d '{"chainId":100,"seller":"0xabc...","sku":"voucher-10","poolId":"pool-a","codes":["CODE1","CODE2"]}' \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"voucher-10","poolId":"pool-a","codes":["CODE1","CODE2"],"totalInventory":250}' \
   http://localhost:${MARKET_ADMIN_PORT}/admin/code-products
 ```
 *   **What it does**: Proxies to CodeDispenser admin APIs and updates `market_service_routes` in Market DB.
@@ -104,7 +105,7 @@ POST /admin/code-products
 Example (via Market admin port):
 ```bash
 curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
-  -d '{"chainId":100,"seller":"0xabc...","sku":"voucher-10","poolId":"pool-a"}' \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"voucher-10","poolId":"pool-a","totalInventory":250}' \
   http://localhost:${MARKET_ADMIN_PORT}/admin/code-products
 ```
 *   **What it does**: Writes mapping via CodeDispenser admin API and updates Market route table.
@@ -161,7 +162,7 @@ POST /admin/odoo-products
 Example (via Market admin port):
 ```bash
 curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
-  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100"}' \
+  -d '{"chainId":100,"seller":"0xabc...","sku":"my-sku","odooProductCode":"GC100","totalInventory":250}' \
   http://localhost:${MARKET_ADMIN_PORT}/admin/odoo-products
 ```
 *   **What it does**: Proxies to Odoo adapter admin APIs and updates the Market route table.
