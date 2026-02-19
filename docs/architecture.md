@@ -1,4 +1,4 @@
-ed # Architecture & Ownership
+# Architecture & Ownership
 
 This document describes the high-level architecture of Circles.Market and defines the ownership rules for data and configuration.
 

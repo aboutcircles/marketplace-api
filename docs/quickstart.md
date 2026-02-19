@@ -12,7 +12,7 @@ This guide helps you get the Circles.Market environment up and running quickly.
 
 1. **Enter the project directory:**
    ```bash
-   cd Circles.Market
+   cd marketplace-api
    ```
 
 2. **Prepare your environment file:**
@@ -60,7 +60,7 @@ curl http://localhost:5084/health
 ```
 
 Inside the docker network, the adapters listen on their default ports (5680 for CodeDispenser, 5678 for Odoo). On localhost, they are mapped to `5680` and `5678` via `docker-compose.yml`.
-Expected response: `Healthy` (or a JSON object with status).
+Expected response: a JSON object like `{"ok": true}`.
 
 ## Empty Config is OK
 

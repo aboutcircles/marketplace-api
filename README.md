@@ -18,10 +18,10 @@ A .NET 10.0 implementation of the Circles Marketplace API, providing aggregated 
 
 ### Development
 
-The solution file is located at `Circles.Market/Circles.Market.sln`.
+The solution file is located at `Circles.Market.sln` in the repository root.
 
 ```bash
-cd Circles.Market
+cd marketplace-api
 dotnet restore
 dotnet build
 ```
@@ -31,7 +31,7 @@ dotnet build
 You can run the stack using Docker Compose:
 
 ```bash
-cd Circles.Market
+cd marketplace-api
 cp .env.example .env
 # Edit .env to set required variables
 docker compose up -d
@@ -59,12 +59,13 @@ Default ports:
 - IPFS Gateway: `28081` (on host, if not conflicting)
 - PostgreSQL: `25433` (on host)
 
-You can customize the configuration by creating a `.env` file in the `Circles.Market` directory.
+You can customize the configuration by creating a `.env` file in the repository root.
 
 ## Documentation
 
 - [Circles.Market.Api Documentation](Circles.Market.Api/README.md)
 - [Configuration Guide](Circles.Market.Api/configuration.md)
+- [Fulfillment workflow](fulfillment.md)
 
 ## License
 
