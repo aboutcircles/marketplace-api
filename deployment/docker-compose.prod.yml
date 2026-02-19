@@ -1,6 +1,12 @@
+# Production compose — uses pre-built images from Docker Hub.
+# Layered with docker-compose.override.yml (Ansible-rendered) for per-host config.
 services:
   market-api:
-    image: aboutcircles/market-api:${MARKET_API_TAG}
+    container_name: market-api
+    image: aboutcircles/market-api:${MARKET_API_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: market-api.Dockerfile
     restart: unless-stopped
     entrypoint: ["dotnet", "Circles.Market.Api.dll"]
     environment:
@@ -19,19 +25,23 @@ services:
       MARKET_ODOO_ADAPTER_TOKEN: ${MARKET_ODOO_ADAPTER_TOKEN-}
       MARKET_CODE_DISPENSER_TOKEN: ${MARKET_CODE_DISPENSER_TOKEN-}
       RPC: ${RPC}
+      CIRCLES_RPC: ${CIRCLES_RPC:-}
       POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_MARKET_API};Username=${DB_MARKET_API_USER};Password=${DB_MARKET_API_PASSWORD}
       IPFS_RPC_URL: ${IPFS_RPC_URL}
       IPFS_RPC_BEARER: ${IPFS_RPC_BEARER}
       IPFS_GATEWAY_URL: ${IPFS_GATEWAY_URL}
-      MARKET_JWT_SECRET: ${MARKET_JWT_SECRET}
-      MARKET_AUTH_ALLOWED_DOMAINS: ${MARKET_AUTH_ALLOWED_DOMAINS}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
-      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
-      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
       ODOO_ADMIN_INTERNAL_URL: http://market-adapter-odoo:${MARKET_ODOO_ADMIN_PORT}
       CODEDISP_ADMIN_INTERNAL_URL: http://market-adapter-codedispenser:${MARKET_CODEDISP_ADMIN_PORT}
       ADMIN_PROXY_ALLOWED_HOSTS: market-adapter-odoo,market-adapter-codedispenser,localhost,127.0.0.1
+      # Auth-service JWKS (RS256, sole authentication)
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
+      # Admin authorization (address allowlist)
+      ADMIN_ADDRESSES: ${ADMIN_ADDRESSES:-}
+      # Admin CORS (comma-separated origins, or "*" for all)
+      ADMIN_CORS_ALLOWED_ORIGINS: ${ADMIN_CORS_ALLOWED_ORIGINS:-*}
     env_file:
       - .env
     volumes:
@@ -57,6 +67,7 @@ services:
           memory: 512M
 
   market-api-health:
+    container_name: market-api-health
     image: curlimages/curl:${CURL_TAG}
     restart: unless-stopped
     command: ["sh", "-c", "sleep infinity"]
@@ -78,7 +89,11 @@ services:
         max-file: "1"
 
   market-adapter-odoo:
+    container_name: market-adapter-odoo
     image: aboutcircles/market-adapter-odoo:${MARKET_ADAPTER_ODOO_TAG}
+    build:
+      context: ..
+      dockerfile: market-adapter-odoo.Dockerfile
     restart: unless-stopped
     entrypoint: ["dotnet", "Circles.Market.Adapters.Odoo.dll"]
     environment:
@@ -87,13 +102,14 @@ services:
       POSTGRES_CONNECTION: Host=postgres;Port=5432;Database=${DB_ODOO};Username=${DB_ODOO_USER};Password=${DB_ODOO_PASSWORD}
       CIRCLES_SERVICE_KEY: ${CIRCLES_SERVICE_KEY}
       ODOO_ADMIN_PORT: ${MARKET_ODOO_ADMIN_PORT}
-      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
-      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
-      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
     env_file:
       - .env
     networks:
       - internal
+      - egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,6 +126,7 @@ services:
           memory: 256M
 
   market-adapter-odoo-health:
+    container_name: market-adapter-odoo-health
     image: curlimages/curl:${CURL_TAG}
     restart: unless-stopped
     command: ["sh", "-c", "sleep infinity"]
@@ -131,7 +148,11 @@ services:
         max-file: "1"
 
   market-adapter-codedispenser:
+    container_name: market-adapter-codedispenser
     image: aboutcircles/market-adapter-codedispenser:${MARKET_ADAPTER_CODEDISP_TAG}
+    build:
+      context: ..
+      dockerfile: market-adapter-codedispenser.Dockerfile
     restart: unless-stopped
     entrypoint: ["dotnet", "Circles.Market.Adapters.CodeDispenser.dll"]
     environment:
@@ -141,13 +162,14 @@ services:
       CIRCLES_SERVICE_KEY: ${CIRCLES_SERVICE_KEY}
       CODE_POOLS_DIR: ${CODE_POOLS_DIR}
       CODEDISP_ADMIN_PORT: ${MARKET_CODEDISP_ADMIN_PORT}
-      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
-      ADMIN_JWT_ISSUER: ${ADMIN_JWT_ISSUER}
-      ADMIN_JWT_AUDIENCE: ${ADMIN_JWT_AUDIENCE}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-circles-auth}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-market-api}
     env_file:
       - .env
     networks:
       - internal
+      - egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,6 +186,7 @@ services:
           memory: 256M
 
   market-adapter-codedispenser-health:
+    container_name: market-adapter-codedispenser-health
     image: curlimages/curl:${CURL_TAG}
     restart: unless-stopped
     command: ["sh", "-c", "sleep infinity"]
@@ -185,6 +208,7 @@ services:
         max-file: "1"
 
   init-db:
+    container_name: market-init-db
     image: postgres:${POSTGRES_TAG}
     depends_on:
       postgres:
@@ -211,6 +235,7 @@ services:
     restart: "no"
 
   postgres:
+    container_name: market-db
     image: postgres:${POSTGRES_TAG}
     restart: unless-stopped
     environment:
@@ -234,6 +259,7 @@ services:
         max-file: "3"
 
   nginx:
+    container_name: market-nginx
     image: nginx:${NGINX_TAG}
     restart: unless-stopped
     ports:

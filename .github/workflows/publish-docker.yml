@@ -3,7 +3,7 @@ name: Publish Docker Images
 on:
   push:
     branches:
-      - main
+      - master
     tags:
       - "v*"
   release:
@@ -11,7 +11,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Kill switch: Set repository variable DEPLOYMENTS_ENABLED=false to disable automated builds
+  # Manual workflow_dispatch always allowed
+  check-killswitch:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - name: Check deployment kill switch
+        id: check
+        env:
+          DEPLOYMENTS_ENABLED: ${{ vars.DEPLOYMENTS_ENABLED }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          ENABLED="${DEPLOYMENTS_ENABLED:-true}"
+          if [ "$ENABLED" = "false" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "::notice::Deployments disabled via DEPLOYMENTS_ENABLED=false"
+            echo "proceed=false" >> $GITHUB_OUTPUT
+          else
+            echo "proceed=true" >> $GITHUB_OUTPUT
+          fi
+
   build-and-push:
+    needs: check-killswitch
+    if: needs.check-killswitch.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -65,3 +88,50 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.slug }}
           cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
+
+  # Dispatch deployment to aboutcircles-infrastructure after images are built
+  trigger-deploy:
+    needs: [check-killswitch, build-and-push]
+    if: |
+      needs.check-killswitch.outputs.proceed == 'true' &&
+      needs.build-and-push.result == 'success' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute short SHA
+        id: sha
+        env:
+          FULL_SHA: ${{ github.sha }}
+        run: echo "short=${FULL_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Trigger Ansible deployment
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.ANSIBLE_REPO_PAT }}
+          repository: aboutcircles/aboutcircles-infrastructure
+          event-type: deploy-circles-smart
+          client-payload: |
+            {
+              "environment": "staging",
+              "image_tag": "sha-${{ steps.sha.outputs.short }}",
+              "commit_sha": "${{ github.sha }}",
+              "triggered_by": "${{ github.actor }}",
+              "source_repo": "${{ github.repository }}",
+              "source_branch": "${{ github.ref_name }}",
+              "deploy": {
+                "market_api": "true",
+                "caddy": "true"
+              }
+            }
+
+      - name: Deployment summary
+        env:
+          SHORT_SHA: ${{ steps.sha.outputs.short }}
+        run: |
+          echo "## Deployment Triggered" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Tag | sha-${SHORT_SHA} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | staging (market_api + caddy) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Infrastructure | aboutcircles-infrastructure |" >> $GITHUB_STEP_SUMMARY

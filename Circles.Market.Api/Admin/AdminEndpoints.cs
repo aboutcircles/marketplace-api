@@ -91,10 +91,7 @@ WHERE offer_type = $1
 
     public static void MapMarketAdminApi(this WebApplication app, string adminBasePath, string marketConn)
     {
-        var group = app.MapGroup(adminBasePath).RequireAuthorization(new AuthorizeAttribute
-        {
-            AuthenticationSchemes = AdminAuthConstants.Scheme
-        });
+        var group = app.MapGroup(adminBasePath).RequireAuthorization("AdminOnly");
 
         group.MapGet("/health", () => Results.Json(new { ok = true }));
 

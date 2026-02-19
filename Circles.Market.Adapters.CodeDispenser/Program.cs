@@ -5,7 +5,10 @@ using Circles.Market.Auth.Siwe;
 using Circles.Market.Fulfillment.Core;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
+using Circles.Market.Shared.Auth;
 using Npgsql;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Prometheus;
 
 var publicBuilder = WebApplication.CreateBuilder(args);
@@ -42,6 +45,19 @@ publicBuilder.Services.AddSingleton<Circles.Market.Adapters.CodeDispenser.Auth.I
         sp.GetRequiredService<ILogger<Circles.Market.Adapters.CodeDispenser.Auth.EnvTrustedCallerAuth>>()));
 
 publicBuilder.Services.AddLogging(o => o.AddConsole());
+
+var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT");
+if (!string.IsNullOrEmpty(otlpEndpoint))
+{
+    publicBuilder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(
+            serviceName: Environment.GetEnvironmentVariable("OTEL_SERVICE_NAME") ?? "market-adapter-codedispenser",
+            serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"))
+        .WithTracing(tracing => tracing
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter());
+}
 
 var publicApp = publicBuilder.Build();
 
@@ -431,12 +447,7 @@ var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
 adminBuilder.Logging.AddConsole();
 adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("CODEDISP_ADMIN_PORT", 5690)}");
-adminBuilder.Services.AddAdminJwtValidation(new SiweAuthOptions
-{
-    JwtSecretEnv = "ADMIN_JWT_SECRET",
-    JwtIssuerEnv = "ADMIN_JWT_ISSUER",
-    JwtAudienceEnv = "ADMIN_JWT_AUDIENCE"
-}, AdminAuthConstants.Scheme);
+adminBuilder.Services.AddAuthServiceJwks();
 
 var adminApp = adminBuilder.Build();
 adminApp.UseAuthentication();

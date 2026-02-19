@@ -32,7 +32,7 @@ internal class AlwaysConfiguredRouteStore : IMarketRouteStore
             Enabled: true));
 
     public Task<IReadOnlyList<MarketSellerAddress>> GetActiveSellersAsync(CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<MarketSellerAddress>>(new List<MarketSellerAddress>());
+        => Task.FromResult<IReadOnlyList<MarketSellerAddress>>(Array.Empty<MarketSellerAddress>());
 }
 
 [TestFixture]
