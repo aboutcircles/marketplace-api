@@ -52,6 +52,7 @@ if (!string.IsNullOrEmpty(otlpEndpoint))
             serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"))
         .WithTracing(tracing => tracing
             .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
             .AddOtlpExporter());
 }
 
