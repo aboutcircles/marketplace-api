@@ -75,6 +75,19 @@ CREATE TABLE IF NOT EXISTS code_assignments (
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_code_assignments_pool_code ON code_assignments(pool_id, code);
 
+CREATE TABLE IF NOT EXISTS code_fulfillment_runs (
+  chain_id          bigint NOT NULL,
+  seller_address    text NOT NULL,
+  payment_reference text NOT NULL,
+  order_id          text NOT NULL,
+  status            text NOT NULL, -- 'started', 'ok', 'error'
+  last_error        text NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  completed_at      timestamptz NULL,
+  PRIMARY KEY (chain_id, seller_address, payment_reference)
+);
+
 -- New: mapping table for seller+sku -> pool
 CREATE TABLE IF NOT EXISTS code_mappings (
   chain_id              bigint NOT NULL,

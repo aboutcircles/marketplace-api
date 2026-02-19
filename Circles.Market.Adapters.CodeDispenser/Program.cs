@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Circles.Market.Adapters.CodeDispenser;
 using Circles.Market.Adapters.CodeDispenser.Admin;
 using Circles.Market.Auth.Siwe;
+using Circles.Market.Fulfillment.Core;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
 using Circles.Market.Shared.Auth;
@@ -32,6 +33,10 @@ publicBuilder.Services.AddSingleton<ICodeDispenserStore>(sp =>
 {
     return new PostgresCodeDispenserStore(postgresConn, sp.GetRequiredService<ILogger<PostgresCodeDispenserStore>>());
 });
+
+publicBuilder.Services.AddSingleton<ICodeDispenserFulfillmentRunStore>(_ =>
+    new PostgresCodeFulfillmentRunStore(postgresConn));
+publicBuilder.Services.AddSingleton<IFulfillmentRunStore>(sp => sp.GetRequiredService<ICodeDispenserFulfillmentRunStore>());
 
 publicBuilder.Services.AddSingleton<Circles.Market.Adapters.CodeDispenser.Auth.ITrustedCallerAuth>(sp =>
     new Circles.Market.Adapters.CodeDispenser.Auth.EnvTrustedCallerAuth(
@@ -143,6 +148,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     long chainId,
     string seller,
     HttpRequest httpRequest,
+    ICodeDispenserFulfillmentRunStore runStore,
     ICodeDispenserStore store,
     ICodeMappingResolver mapper,
     Circles.Market.Adapters.CodeDispenser.Auth.ITrustedCallerAuth auth,
@@ -176,12 +182,58 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         return Results.BadRequest(new { error = err ?? "Invalid request" });
     }
 
+    string sellerLower = seller.ToLowerInvariant();
+
     // Auth: require X-Circles-Service-Key with 'fulfill' scope
     string? apiKey = httpRequest.Headers["X-Circles-Service-Key"].FirstOrDefault();
     var authRes = await auth.AuthorizeAsync(apiKey, requiredScope: "fulfill", chainId: chainId, seller: seller, ct: ct);
     if (!authRes.Allowed)
     {
         return Results.Unauthorized();
+    }
+
+    var gate = await FulfillmentRunGate.TryAcquireAsync(runStore, chainId, sellerLower, req.PaymentReference, req.OrderId, ct);
+    if (gate.State != FulfillmentRunGateState.Acquired)
+    {
+        if (gate.State == FulfillmentRunGateState.AlreadyProcessed)
+        {
+            return Results.Json(new Dictionary<string, object?>
+            {
+                ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
+                ["@type"] = "circles:CodeDispenserResult",
+                ["status"] = "ok",
+                ["orderId"] = req.OrderId,
+                ["paymentReference"] = req.PaymentReference,
+                ["seller"] = sellerLower,
+                ["message"] = "Already processed",
+                ["codes"] = Array.Empty<string>()
+            });
+        }
+
+        if (gate.State == FulfillmentRunGateState.InProgress)
+        {
+            return Results.Json(new Dictionary<string, object?>
+            {
+                ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
+                ["@type"] = "circles:CodeDispenserResult",
+                ["status"] = "ok",
+                ["orderId"] = req.OrderId,
+                ["paymentReference"] = req.PaymentReference,
+                ["seller"] = sellerLower,
+                ["message"] = "Already in progress",
+                ["codes"] = Array.Empty<string>()
+            });
+        }
+
+        return Results.Json(new Dictionary<string, object?>
+        {
+            ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
+            ["@type"] = "circles:CodeDispenserResult",
+            ["status"] = "error",
+            ["orderId"] = req.OrderId,
+            ["paymentReference"] = req.PaymentReference,
+            ["message"] = "Could not acquire fulfillment lock"
+        }, statusCode: 500);
     }
 
     // Resolve mapping for items
@@ -196,6 +248,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
     if (mapped.Count == 0)
     {
+        await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, ct);
         return Results.Json(new Dictionary<string, object?>
         {
             ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
@@ -212,6 +265,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     var distinctSkus = mapped.Select(m => m.sku).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     if (distinctPools.Count != 1 || distinctSkus.Count != 1)
     {
+        await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, "Ambiguous mapping for fulfillment request", ct);
         return Results.Json(new Dictionary<string, object?>
         {
             ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
@@ -236,12 +290,14 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         if (desiredQty < 1) desiredQty = 1;
         if (desiredQty > 100)
         {
+            await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, "Requested quantity exceeds limit (max 100)", ct);
             return Results.BadRequest(new { error = "Requested quantity exceeds limit (max 100)" });
         }
 
         var (status, codes) = await store.AssignManyAsync(chainId, seller.ToLowerInvariant(), req.PaymentReference, req.OrderId, picked.sku, picked.entry.PoolId, desiredQty, ct);
         if (status == AssignmentStatus.Depleted || codes.Count == 0)
         {
+            await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, ct);
             return Results.Json(new Dictionary<string, object?>
             {
                 ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
@@ -249,7 +305,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
                 ["status"] = "depleted",
                 ["orderId"] = req.OrderId,
                 ["paymentReference"] = req.PaymentReference,
-                ["seller"] = seller.ToLowerInvariant(),
+                ["seller"] = sellerLower,
                 ["sku"] = picked.sku,
                 ["requestedQuantity"] = desiredQty,
                 ["codes"] = Array.Empty<string>(),
@@ -258,6 +314,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         }
         if (status == AssignmentStatus.Ok)
         {
+            await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, ct);
             string? downloadUrl = null;
             string? firstCode = codes.FirstOrDefault();
             if (!string.IsNullOrWhiteSpace(picked.entry.DownloadUrlTemplate) && !string.IsNullOrEmpty(firstCode))
@@ -271,7 +328,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
                 ["status"] = "ok",
                 ["orderId"] = req.OrderId,
                 ["paymentReference"] = req.PaymentReference,
-                ["seller"] = seller.ToLowerInvariant(),
+                ["seller"] = sellerLower,
                 ["sku"] = picked.sku,
                 ["codes"] = codes,
                 ["downloadUrl"] = downloadUrl,
@@ -280,6 +337,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         }
 
         // Fallback error
+        await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, "Unexpected assignment status", ct);
         return Results.Json(new Dictionary<string, object?>
         {
             ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
@@ -304,6 +362,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
             var retry = await store.AssignManyAsync(chainId, seller.ToLowerInvariant(), req.PaymentReference, req.OrderId, picked.sku, picked.entry.PoolId, desiredQty2, ct);
             if (retry.status == AssignmentStatus.Ok && retry.codes.Count > 0)
             {
+                await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, ct);
                 string? downloadUrl = null;
                 string? firstCode = retry.codes.FirstOrDefault();
                 if (!string.IsNullOrWhiteSpace(picked.entry.DownloadUrlTemplate) && !string.IsNullOrEmpty(firstCode))
@@ -317,7 +376,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
                     ["status"] = "ok",
                     ["orderId"] = req.OrderId,
                     ["paymentReference"] = req.PaymentReference,
-                    ["seller"] = seller.ToLowerInvariant(),
+                    ["seller"] = sellerLower,
                     ["sku"] = picked.sku,
                     ["codes"] = retry.codes,
                     ["downloadUrl"] = downloadUrl,
@@ -340,6 +399,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
             throw;
         }
 
+        await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, "unique constraint violation", ct);
         return Results.Json(new Dictionary<string, object?>
         {
             ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},
@@ -353,6 +413,8 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     catch (Exception ex)
     {
         log.LogError(ex, "Fulfillment error");
+        var msg = ex.Message.Length > 2000 ? ex.Message.Substring(0, 2000) : ex.Message;
+        await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, ct);
         return Results.Json(new Dictionary<string, object?>
         {
             ["@context"] = new object[]{"https://schema.org/", "https://aboutcircles.com/contexts/circles-market/"},

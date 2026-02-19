@@ -69,12 +69,12 @@ for production use (`docker-compose.prod.yml`)`.
 For the rest of this guid we assume the development environment.
 
 #### 2.1. Run the environment
-Navigate to `Circles.Market/deployment`, then run `start-dev.sh`. This script will start all services in
+Navigate to `deployment/` (from the repository root), then run `start-dev.sh`. This script will start all services in
 `docker-compose.dev.yml` and output connection details for every service.
 
 By default, `start-dev.sh` redacts secrets in its output. Pass `--show-secrets` if you explicitly want to print credentials.
 ```shell
-cd Circles.Market/deployment
+cd deployment
 ./start-dev.sh
 ```
 

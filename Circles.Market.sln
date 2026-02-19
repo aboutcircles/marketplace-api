@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Circles.Market.Tests", "Cir
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Circles.Market.Auth.Siwe", "Circles.Market.Auth.Siwe\Circles.Market.Auth.Siwe.csproj", "{D3A96899-35D6-4342-B780-25ED5ACF7F89}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Circles.Market.Fulfillment.Core", "Circles.Market.Fulfillment.Core\Circles.Market.Fulfillment.Core.csproj", "{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -95,6 +97,18 @@ Global
 		{D3A96899-35D6-4342-B780-25ED5ACF7F89}.Release|x64.Build.0 = Release|Any CPU
 		{D3A96899-35D6-4342-B780-25ED5ACF7F89}.Release|x86.ActiveCfg = Release|Any CPU
 		{D3A96899-35D6-4342-B780-25ED5ACF7F89}.Release|x86.Build.0 = Release|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Debug|x64.Build.0 = Debug|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Debug|x86.Build.0 = Debug|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Release|x64.ActiveCfg = Release|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Release|x64.Build.0 = Release|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Release|x86.ActiveCfg = Release|Any CPU
+		{CB46F80D-7ECF-4BF6-8258-C6785BA2BAE0}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

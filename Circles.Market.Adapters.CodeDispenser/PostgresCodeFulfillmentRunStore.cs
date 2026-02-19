@@ -1,17 +1,13 @@
-using Npgsql;
 using Circles.Market.Fulfillment.Core;
+using Npgsql;
 
-namespace Circles.Market.Adapters.Odoo.Db;
+namespace Circles.Market.Adapters.CodeDispenser;
 
-public interface IOdooFulfillmentRunStore : IFulfillmentRunStore
-{
-    Task SetOdooOrderInfoAsync(long chainId, string seller, string paymentReference, int odooOrderId, string odooOrderName, CancellationToken ct);
-}
+public interface ICodeDispenserFulfillmentRunStore : IFulfillmentRunStore;
 
-public sealed class PostgresFulfillmentRunStore : IOdooFulfillmentRunStore
+public sealed class PostgresCodeFulfillmentRunStore : ICodeDispenserFulfillmentRunStore
 {
     private readonly string _connString;
-    private readonly ILogger<PostgresFulfillmentRunStore> _log;
 
     private static string NormalizeSeller(string seller)
     {
@@ -25,10 +21,9 @@ public sealed class PostgresFulfillmentRunStore : IOdooFulfillmentRunStore
         return paymentReference.Trim();
     }
 
-    public PostgresFulfillmentRunStore(string connString, ILogger<PostgresFulfillmentRunStore> log)
+    public PostgresCodeFulfillmentRunStore(string connString)
     {
         _connString = connString ?? throw new ArgumentNullException(nameof(connString));
-        _log = log ?? throw new ArgumentNullException(nameof(log));
     }
 
     public async Task<(bool acquired, string? status)> TryBeginAsync(
@@ -45,14 +40,14 @@ public sealed class PostgresFulfillmentRunStore : IOdooFulfillmentRunStore
         string orderNorm = orderId.Trim();
 
         int staleMinutes = 10;
-        string? staleEnv = Environment.GetEnvironmentVariable("ODOO_FULFILLMENT_STALE_MINUTES");
+        string? staleEnv = Environment.GetEnvironmentVariable("CODE_FULFILLMENT_STALE_MINUTES");
         if (!string.IsNullOrWhiteSpace(staleEnv) && int.TryParse(staleEnv, out var parsed) && parsed > 0)
         {
             staleMinutes = parsed;
         }
 
         bool allowStartedTakeover = false;
-        string? allowStartedTakeoverEnv = Environment.GetEnvironmentVariable("ODOO_FULFILLMENT_ALLOW_STARTED_TAKEOVER");
+        string? allowStartedTakeoverEnv = Environment.GetEnvironmentVariable("CODE_FULFILLMENT_ALLOW_STARTED_TAKEOVER");
         if (!string.IsNullOrWhiteSpace(allowStartedTakeoverEnv) && bool.TryParse(allowStartedTakeoverEnv, out var parsedAllow))
         {
             allowStartedTakeover = parsedAllow;
@@ -61,9 +56,8 @@ public sealed class PostgresFulfillmentRunStore : IOdooFulfillmentRunStore
         await using var conn = new NpgsqlConnection(_connString);
         await conn.OpenAsync(ct);
 
-        // 1) Insert new run (fast path)
         const string insertSql = @"
-INSERT INTO fulfillment_runs(chain_id, seller_address, payment_reference, order_id, status, updated_at)
+INSERT INTO code_fulfillment_runs(chain_id, seller_address, payment_reference, order_id, status, updated_at)
 VALUES (@c, @s, @p, @o, 'started', now())
 ON CONFLICT (chain_id, seller_address, payment_reference) DO NOTHING;
 ";
@@ -82,9 +76,8 @@ ON CONFLICT (chain_id, seller_address, payment_reference) DO NOTHING;
             }
         }
 
-        // 2) Takeover if existing is error OR started but stale
         const string takeoverSql = @"
-UPDATE fulfillment_runs
+UPDATE code_fulfillment_runs
 SET status='started',
     updated_at=now(),
     completed_at=NULL,
@@ -113,7 +106,6 @@ WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p
             }
         }
 
-        // 3) Not acquired: report status
         string? status = await GetStatusAsync(chainId, sellerNorm, paymentNorm, ct);
         return (false, status);
     }
@@ -127,7 +119,7 @@ WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p
         await conn.OpenAsync(ct);
 
         const string sql = @"
-UPDATE fulfillment_runs
+UPDATE code_fulfillment_runs
 SET status='ok', updated_at=now(), completed_at=now(), last_error=NULL
 WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
 ";
@@ -149,7 +141,7 @@ WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
         await conn.OpenAsync(ct);
 
         const string sql = @"
-UPDATE fulfillment_runs
+UPDATE code_fulfillment_runs
 SET status='error', updated_at=now(), completed_at=now(), last_error=@e
 WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
 ";
@@ -163,29 +155,6 @@ WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    public async Task SetOdooOrderInfoAsync(long chainId, string seller, string paymentReference, int odooOrderId, string odooOrderName, CancellationToken ct)
-    {
-        string sellerNorm = NormalizeSeller(seller);
-        string paymentNorm = NormalizePaymentReference(paymentReference);
-
-        await using var conn = new Npgsql.NpgsqlConnection(_connString);
-        await conn.OpenAsync(ct);
-
-        const string sql = @"
-UPDATE fulfillment_runs
-SET odoo_order_id=@oid, odoo_order_name=@oname, updated_at=now()
-WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
-";
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@c", chainId);
-        cmd.Parameters.AddWithValue("@s", sellerNorm);
-        cmd.Parameters.AddWithValue("@p", paymentNorm);
-        cmd.Parameters.AddWithValue("@oid", odooOrderId);
-        cmd.Parameters.AddWithValue("@oname", odooOrderName);
-        await cmd.ExecuteNonQueryAsync(ct);
-    }
-
     public async Task<string?> GetStatusAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
     {
         string sellerNorm = NormalizeSeller(seller);
@@ -196,7 +165,7 @@ WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
 
         const string sql = @"
 SELECT status
-FROM fulfillment_runs
+FROM code_fulfillment_runs
 WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p
 LIMIT 1;
 ";

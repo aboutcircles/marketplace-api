@@ -4,6 +4,7 @@ using Circles.Market.Adapters.Odoo.Admin;
 using Circles.Market.Adapters.Odoo.Auth;
 using Circles.Market.Adapters.Odoo.Db;
 using Circles.Market.Auth.Siwe;
+using Circles.Market.Fulfillment.Core;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
 using Circles.Market.Shared.Auth;
@@ -29,10 +30,11 @@ publicBuilder.Services.AddSingleton<ITrustedCallerAuth>(sp =>
 publicBuilder.Services.AddSingleton<IInventoryMappingResolver>(sp => new PostgresInventoryMappingResolver(connString, sp.GetRequiredService<ILogger<PostgresInventoryMappingResolver>>()));
 publicBuilder.Services.AddSingleton<IOdooConnectionResolver>(sp => new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
 
-publicBuilder.Services.AddSingleton<IFulfillmentRunStore>(sp =>
+publicBuilder.Services.AddSingleton<IOdooFulfillmentRunStore>(sp =>
     new PostgresFulfillmentRunStore(
         connString,
         sp.GetRequiredService<ILogger<PostgresFulfillmentRunStore>>()));
+publicBuilder.Services.AddSingleton<IFulfillmentRunStore>(sp => sp.GetRequiredService<IOdooFulfillmentRunStore>());
 
 // Typed HttpClient for Odoo JSON-RPC.
 publicBuilder.Services.AddHttpClient<OdooClient>();
@@ -252,7 +254,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         ITrustedCallerAuth auth,
         IOdooConnectionResolver odooResolver,
         IInventoryMappingResolver mapper,
-        IFulfillmentRunStore runStore,
+        IOdooFulfillmentRunStore runStore,
         IHostApplicationLifetime lifetime,
         IHttpClientFactory httpFactory,
         ILoggerFactory loggerFactory,
@@ -309,17 +311,17 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         string sellerLower = seller.ToLowerInvariant();
 
         // Idempotency check: fulfillment_runs
-        var (acquired, existingStatus) = await runStore.TryBeginAsync(chainId, sellerLower, req.PaymentReference, req.OrderId, ct);
-        if (!acquired)
+        var gate = await FulfillmentRunGate.TryAcquireAsync(runStore, chainId, sellerLower, req.PaymentReference, req.OrderId, ct);
+        if (gate.State != FulfillmentRunGateState.Acquired)
         {
-            if (string.Equals(existingStatus, "ok", StringComparison.OrdinalIgnoreCase))
+            if (gate.State == FulfillmentRunGateState.AlreadyProcessed)
             {
                 return Results.Json(
                     JsonLdResult("ok", req.OrderId, req.PaymentReference, sellerLower, null, "Already processed", Array.Empty<string>()),
                     (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd);
             }
 
-            if (string.Equals(existingStatus, "started", StringComparison.OrdinalIgnoreCase))
+            if (gate.State == FulfillmentRunGateState.InProgress)
             {
                 return Results.Json(
                     JsonLdResult("ok", req.OrderId, req.PaymentReference, sellerLower, null, "Already in progress", Array.Empty<string>()),

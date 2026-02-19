@@ -63,6 +63,7 @@ Default ports:
 - [Operations & DB Configuration Guide](docs/ops.md)
 - [Architecture & Ownership](docs/architecture.md)
 - [Configuration Guide](Circles.Market.Api/configuration.md)
+- [Fulfillment workflow](fulfillment.md)
 
 ## License
 
