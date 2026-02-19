@@ -3,6 +3,9 @@
 services:
   market-api:
     image: aboutcircles/market-api:${MARKET_API_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: market-api.Dockerfile
     restart: unless-stopped
     entrypoint: ["dotnet", "Circles.Market.Api.dll"]
     environment:
@@ -85,6 +88,9 @@ services:
 
   market-adapter-odoo:
     image: aboutcircles/market-adapter-odoo:${MARKET_ADAPTER_ODOO_TAG}
+    build:
+      context: ..
+      dockerfile: market-adapter-odoo.Dockerfile
     restart: unless-stopped
     entrypoint: ["dotnet", "Circles.Market.Adapters.Odoo.dll"]
     environment:
@@ -139,6 +145,9 @@ services:
 
   market-adapter-codedispenser:
     image: aboutcircles/market-adapter-codedispenser:${MARKET_ADAPTER_CODEDISP_TAG}
+    build:
+      context: ..
+      dockerfile: market-adapter-codedispenser.Dockerfile
     restart: unless-stopped
     entrypoint: ["dotnet", "Circles.Market.Adapters.CodeDispenser.dll"]
     environment:
