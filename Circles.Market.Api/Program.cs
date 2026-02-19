@@ -18,6 +18,8 @@ using Circles.Profiles.Market;
 using Circles.Profiles.Sdk;
 using Circles.Profiles.Sdk.Utils;
 using Nethereum.Web3;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Prometheus;
 
 static string SafeUrl(string url)
@@ -246,6 +248,18 @@ publicBuilder.Services.AddCors(options =>
 // Clients authenticate via the auth-service (DO) challenge/verify flow
 // and send: Authorization: Bearer <auth-service-jwt>
 publicBuilder.Services.AddAuthServiceJwks();
+
+var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT");
+if (!string.IsNullOrEmpty(otlpEndpoint))
+{
+    publicBuilder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(
+            serviceName: Environment.GetEnvironmentVariable("OTEL_SERVICE_NAME") ?? "market-api",
+            serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"))
+        .WithTracing(tracing => tracing
+            .AddAspNetCoreInstrumentation()
+            .AddOtlpExporter());
+}
 
 var publicApp = publicBuilder.Build();
 

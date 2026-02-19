@@ -8,6 +8,8 @@ using Circles.Market.Fulfillment.Core;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
 using Circles.Market.Shared.Auth;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Prometheus;
 
 var publicBuilder = WebApplication.CreateBuilder(args);
@@ -40,6 +42,18 @@ publicBuilder.Services.AddSingleton<IFulfillmentRunStore>(sp => sp.GetRequiredSe
 publicBuilder.Services.AddHttpClient<OdooClient>();
 
 publicBuilder.Services.AddMemoryCache();
+
+var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT");
+if (!string.IsNullOrEmpty(otlpEndpoint))
+{
+    publicBuilder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(
+            serviceName: Environment.GetEnvironmentVariable("OTEL_SERVICE_NAME") ?? "market-adapter-odoo",
+            serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown"))
+        .WithTracing(tracing => tracing
+            .AddAspNetCoreInstrumentation()
+            .AddOtlpExporter());
+}
 
 var publicApp = publicBuilder.Build();
 
