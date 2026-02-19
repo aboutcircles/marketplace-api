@@ -2,6 +2,7 @@
 # Layered with docker-compose.override.yml (Ansible-rendered) for per-host config.
 services:
   market-api:
+    container_name: market-api
     image: aboutcircles/market-api:${MARKET_API_TAG:-latest}
     build:
       context: ..
@@ -66,6 +67,7 @@ services:
           memory: 512M
 
   market-api-health:
+    container_name: market-api-health
     image: curlimages/curl:${CURL_TAG}
     restart: unless-stopped
     command: ["sh", "-c", "sleep infinity"]
@@ -87,6 +89,7 @@ services:
         max-file: "1"
 
   market-adapter-odoo:
+    container_name: market-adapter-odoo
     image: aboutcircles/market-adapter-odoo:${MARKET_ADAPTER_ODOO_TAG}
     build:
       context: ..
@@ -123,6 +126,7 @@ services:
           memory: 256M
 
   market-adapter-odoo-health:
+    container_name: market-adapter-odoo-health
     image: curlimages/curl:${CURL_TAG}
     restart: unless-stopped
     command: ["sh", "-c", "sleep infinity"]
@@ -144,6 +148,7 @@ services:
         max-file: "1"
 
   market-adapter-codedispenser:
+    container_name: market-adapter-codedispenser
     image: aboutcircles/market-adapter-codedispenser:${MARKET_ADAPTER_CODEDISP_TAG}
     build:
       context: ..
@@ -181,6 +186,7 @@ services:
           memory: 256M
 
   market-adapter-codedispenser-health:
+    container_name: market-adapter-codedispenser-health
     image: curlimages/curl:${CURL_TAG}
     restart: unless-stopped
     command: ["sh", "-c", "sleep infinity"]
@@ -202,6 +208,7 @@ services:
         max-file: "1"
 
   init-db:
+    container_name: market-init-db
     image: postgres:${POSTGRES_TAG}
     depends_on:
       postgres:
@@ -228,6 +235,7 @@ services:
     restart: "no"
 
   postgres:
+    container_name: market-db
     image: postgres:${POSTGRES_TAG}
     restart: unless-stopped
     environment:
@@ -251,6 +259,7 @@ services:
         max-file: "3"
 
   nginx:
+    container_name: market-nginx
     image: nginx:${NGINX_TAG}
     restart: unless-stopped
     ports:
