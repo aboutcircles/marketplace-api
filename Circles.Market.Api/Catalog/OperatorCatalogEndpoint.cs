@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Circles.Market.Api.Routing;
 using Circles.Profiles.Market;
 using Circles.Profiles.Models.Market;
@@ -172,7 +173,7 @@ public static class OperatorCatalogEndpoint
             // Rewrite offer feed URLs to point to the Market API endpoints
             // so clients consume a uniform, validated interface instead of arbitrary upstream URLs.
             string baseUrl = ResolvePublicBaseUrl(ctx);
-            await ReplaceInventoryFeedUrlsAsync(page, chain, baseUrl, routes, ct);
+            var totalInventoryByProductIndex = await ReplaceInventoryFeedUrlsAsync(page, chain, baseUrl, routes, ct);
 
             var aggPayload = new AggregatedCatalog
             {
@@ -184,8 +185,11 @@ public static class OperatorCatalogEndpoint
                 Errors = errors
             };
 
-            await JsonSerializer.SerializeAsync(ctx.Response.Body, aggPayload,
-                Circles.Profiles.Models.JsonSerializerOptions.JsonLd, ct);
+            await SerializeCatalogWithTotalInventoryAsync(
+                ctx.Response.Body,
+                aggPayload,
+                totalInventoryByProductIndex,
+                ct);
 
             logger?.LogInformation(
                 "Operator catalog response: avatarsScanned={AvCount} pageCount={PageCount} totalProducts={Total} errors={ErrCount}",
@@ -219,16 +223,17 @@ public static class OperatorCatalogEndpoint
         }
     }
 
-    private static async Task ReplaceInventoryFeedUrlsAsync(
+    private static async Task<List<long?>> ReplaceInventoryFeedUrlsAsync(
         List<AggregatedCatalogItem> page,
         long chain,
         string baseUrl,
         IMarketRouteStore routes,
         CancellationToken ct)
     {
+        var totals = Enumerable.Repeat<long?>(null, page.Count).ToList();
         if (page.Count <= 0)
         {
-            return;
+            return totals;
         }
 
         for (int i = 0; i < page.Count; i++)
@@ -244,6 +249,7 @@ public static class OperatorCatalogEndpoint
             string sku = prod.Sku.Trim().ToLowerInvariant();
 
             var cfg = await routes.TryGetAsync(chain, sellerAddr, sku, ct);
+            totals[i] = cfg?.TotalInventory;
 
             bool isOneOff = cfg is not null && cfg.IsOneOff;
 
@@ -300,6 +306,37 @@ public static class OperatorCatalogEndpoint
             var newProd = prod with { Offers = newOffers };
             page[i] = item with { Product = newProd };
         }
+
+        return totals;
+    }
+
+    private static async Task SerializeCatalogWithTotalInventoryAsync(
+        Stream output,
+        AggregatedCatalog payload,
+        IReadOnlyList<long?> totalInventoryByProductIndex,
+        CancellationToken ct)
+    {
+        JsonNode? root = JsonSerializer.SerializeToNode(payload, Circles.Profiles.Models.JsonSerializerOptions.JsonLd);
+        if (root is JsonObject obj &&
+            obj["products"] is JsonArray products)
+        {
+            int count = Math.Min(products.Count, totalInventoryByProductIndex.Count);
+            for (int i = 0; i < count; i++)
+            {
+                var totalInventory = totalInventoryByProductIndex[i];
+                if (totalInventory is null)
+                {
+                    continue;
+                }
+
+                if (products[i] is JsonObject itemObj && itemObj["product"] is JsonObject productObj)
+                {
+                    productObj["totalInventory"] = totalInventory.Value;
+                }
+            }
+        }
+
+        await JsonSerializer.SerializeAsync(output, root, Circles.Profiles.Models.JsonSerializerOptions.JsonLd, ct);
     }
 
     private static string ResolvePublicBaseUrl(HttpContext ctx)

@@ -97,4 +97,20 @@ public class MarketRouteStoreConfiguredSemanticsTests
         var ok = await store.IsConfiguredAsync(100, "0xseller", "sku");
         Assert.That(ok, Is.True);
     }
+
+    [Test]
+    public void MarketRouteConfig_CanCarry_TotalInventory_Metadata()
+    {
+        var cfg = new MarketRouteConfig(
+            ChainId: 100,
+            SellerAddress: "0xseller",
+            Sku: "sku",
+            OfferType: "odoo",
+            IsOneOff: false,
+            Enabled: true,
+            TotalInventory: 123);
+
+        Assert.That(cfg.TotalInventory, Is.EqualTo(123));
+        Assert.That(cfg.IsConfigured, Is.True);
+    }
 }

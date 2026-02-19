@@ -9,6 +9,7 @@ public sealed class AddOdooProductRequest
     [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
     [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
     [JsonPropertyName("odooProductCode")] public string OdooProductCode { get; set; } = string.Empty;
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
 }
 
@@ -48,6 +49,7 @@ public sealed class AddCodeProductRequest
     [JsonPropertyName("poolId")] public string PoolId { get; set; } = string.Empty;
     [JsonPropertyName("downloadUrlTemplate")] public string? DownloadUrlTemplate { get; set; }
     [JsonPropertyName("codes")] public List<string>? Codes { get; set; }
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
 }
 
@@ -58,6 +60,7 @@ public sealed class AdminRouteDto
     [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
     [JsonPropertyName("offerType")] public string? OfferType { get; set; }
     [JsonPropertyName("isOneOff")] public bool IsOneOff { get; set; }
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; }
 }
 
@@ -68,6 +71,7 @@ public sealed class UpsertRouteRequest
     [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
     [JsonPropertyName("offerType")] public string? OfferType { get; set; }
     [JsonPropertyName("isOneOff")] public bool IsOneOff { get; set; }
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
 }
 
@@ -77,6 +81,7 @@ public sealed class AdminOdooProductDto
     [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
     [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
     [JsonPropertyName("odooProductCode")] public string OdooProductCode { get; set; } = string.Empty;
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; }
     [JsonPropertyName("revokedAt")] public DateTimeOffset? RevokedAt { get; set; }
 }
@@ -108,6 +113,7 @@ public sealed class AdminCodeProductDto
     [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
     [JsonPropertyName("poolId")] public string PoolId { get; set; } = string.Empty;
     [JsonPropertyName("downloadUrlTemplate")] public string? DownloadUrlTemplate { get; set; }
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; }
     [JsonPropertyName("revokedAt")] public DateTimeOffset? RevokedAt { get; set; }
     [JsonPropertyName("poolRemaining")] public long? PoolRemaining { get; set; }

@@ -177,4 +177,5 @@ public class MarketApiTests
         Assert.That(ctx.Response.StatusCode, Is.EqualTo(StatusCodes.Status200OK));
         Assert.That(ctx.Response.Headers.ContainsKey("Vary"), Is.False);
     }
+
 }
