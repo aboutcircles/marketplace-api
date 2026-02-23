@@ -98,6 +98,11 @@ public sealed class JsonLdShapeVerifier : IJsonLdShapeVerifier
 
             // Accept any valid model from our contexts (except aggregate), with per-type validation.
             // Keep the checks deliberately strict but cheap: we validate shape, not semantics that require RPC.
+            if (type.Equals("Bookmarks", StringComparison.Ordinal) && ctx.Contains(JsonLdMeta.ProfileContext))
+            {
+                return ValidateBookmarks(root, out reason);
+            }
+
             if (type.Equals("Profile", StringComparison.Ordinal) && ctx.Contains(JsonLdMeta.ProfileContext))
             {
                 // Minimal shape is fine; fields inside are validated elsewhere when used.
@@ -209,6 +214,134 @@ public sealed class JsonLdShapeVerifier : IJsonLdShapeVerifier
             if (!TryGetNullableLong(root, "revokedAt", out _))
             {
                 reason = "SigningKey.revokedAt must be a unix timestamp when present";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ValidateBookmarks(JsonElement root, out string? reason)
+    {
+        reason = null;
+
+        if (!root.TryGetProperty("@context", out var contextProp) ||
+            contextProp.ValueKind != JsonValueKind.String ||
+            !string.Equals(contextProp.GetString(), JsonLdMeta.ProfileContext, StringComparison.Ordinal))
+        {
+            reason = "Bookmarks.@context must equal the profile context URI string";
+            return false;
+        }
+
+        if (!root.TryGetProperty("@type", out var typeProp) ||
+            typeProp.ValueKind != JsonValueKind.String ||
+            !string.Equals(typeProp.GetString(), "Bookmarks", StringComparison.Ordinal))
+        {
+            reason = "Bookmarks.@type must equal 'Bookmarks'";
+            return false;
+        }
+
+        if (!HasOnlyProperties(root, "@context", "@type", "bookmarks"))
+        {
+            reason = "Bookmarks contains unsupported top-level properties";
+            return false;
+        }
+
+        if (!root.TryGetProperty("bookmarks", out var bookmarks) || bookmarks.ValueKind != JsonValueKind.Object)
+        {
+            reason = "Bookmarks.bookmarks is required and must be an object";
+            return false;
+        }
+
+        if (!HasOnlyProperties(bookmarks, "version", "profiles", "folders", "products"))
+        {
+            reason = "Bookmarks.bookmarks contains unsupported properties";
+            return false;
+        }
+
+        if (!bookmarks.TryGetProperty("version", out var versionProp) ||
+            versionProp.ValueKind != JsonValueKind.Number ||
+            !versionProp.TryGetInt32(out var version) ||
+            version != 1)
+        {
+            reason = "Bookmarks.bookmarks.version must be integer 1";
+            return false;
+        }
+
+        if (!bookmarks.TryGetProperty("profiles", out var profilesProp) || profilesProp.ValueKind != JsonValueKind.Array)
+        {
+            reason = "Bookmarks.bookmarks.profiles is required and must be an array";
+            return false;
+        }
+
+        foreach (var profile in profilesProp.EnumerateArray())
+        {
+            if (profile.ValueKind != JsonValueKind.Object)
+            {
+                reason = "Bookmarks.bookmarks.profiles[] must be objects";
+                return false;
+            }
+
+            if (!HasOnlyProperties(profile, "address", "createdAt", "note", "folder"))
+            {
+                reason = "Bookmarks.bookmarks.profiles[] contains unsupported properties";
+                return false;
+            }
+
+            if (!profile.TryGetProperty("address", out var addressProp) ||
+                addressProp.ValueKind != JsonValueKind.String ||
+                !Eip55AddrShape.IsMatch(addressProp.GetString() ?? string.Empty))
+            {
+                reason = "Bookmarks.bookmarks.profiles[].address must be a 0x-prefixed 20-byte hex address";
+                return false;
+            }
+
+            if (!profile.TryGetProperty("createdAt", out var createdAtProp) ||
+                createdAtProp.ValueKind != JsonValueKind.Number)
+            {
+                reason = "Bookmarks.bookmarks.profiles[].createdAt is required and must be a number";
+                return false;
+            }
+
+            if (profile.TryGetProperty("note", out var noteProp) && noteProp.ValueKind != JsonValueKind.String)
+            {
+                reason = "Bookmarks.bookmarks.profiles[].note must be a string when present";
+                return false;
+            }
+
+            if (profile.TryGetProperty("folder", out var folderProp) && folderProp.ValueKind != JsonValueKind.String)
+            {
+                reason = "Bookmarks.bookmarks.profiles[].folder must be a string when present";
+                return false;
+            }
+        }
+
+        if (!bookmarks.TryGetProperty("folders", out var foldersProp) || foldersProp.ValueKind != JsonValueKind.Array)
+        {
+            reason = "Bookmarks.bookmarks.folders is required and must be an array";
+            return false;
+        }
+
+        foreach (var folder in foldersProp.EnumerateArray())
+        {
+            if (folder.ValueKind != JsonValueKind.String)
+            {
+                reason = "Bookmarks.bookmarks.folders[] entries must be strings";
+                return false;
+            }
+        }
+
+        if (!bookmarks.TryGetProperty("products", out var productsProp) || productsProp.ValueKind != JsonValueKind.Array)
+        {
+            reason = "Bookmarks.bookmarks.products is required and must be an array";
+            return false;
+        }
+
+        foreach (var product in productsProp.EnumerateArray())
+        {
+            if (product.ValueKind != JsonValueKind.String)
+            {
+                reason = "Bookmarks.bookmarks.products[] entries must be strings";
                 return false;
             }
         }
@@ -952,5 +1085,16 @@ public sealed class JsonLdShapeVerifier : IJsonLdShapeVerifier
                 u.Scheme.Equals("cid", StringComparison.OrdinalIgnoreCase) ||
                 u.Scheme.Equals("ar", StringComparison.OrdinalIgnoreCase) ||
                 u.Scheme.Equals("data", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool HasOnlyProperties(JsonElement obj, params string[] allowed)
+    {
+        var set = new HashSet<string>(allowed, StringComparer.Ordinal);
+        foreach (var prop in obj.EnumerateObject())
+        {
+            if (!set.Contains(prop.Name)) return false;
+        }
+
+        return true;
     }
 }
