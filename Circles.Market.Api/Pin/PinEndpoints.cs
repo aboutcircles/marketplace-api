@@ -66,7 +66,7 @@ public static class PinEndpoints
                 );
             }
 
-            var cid = await ipfs.AddBytesAsync(bytes, pin: true, ct);
+            var cid = await ipfs.AddStringAsync(System.Text.Encoding.UTF8.GetString(bytes), pin: true, ct);
             return Results.Json(new { cid });
         }
         catch (ArgumentException ex)
