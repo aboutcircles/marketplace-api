@@ -73,12 +73,39 @@ echo "   Expires:      $EXPIRES_AT"
 echo "   Message (first 80 chars): $(echo "$SIWE_MESSAGE" | head -1 | cut -c1-80)"
 echo ""
 
-# ── 4. Sign SIWE message with EOA key (NOT the Safe) ────────────────
-echo "── Step 2: Sign SIWE message with EOA key"
-echo "   (ecrecover will return $EOA_ADDRESS, not $SAFE_ADDRESS)"
-echo "   → server falls back to ERC-1271 isValidSignature on Safe contract"
-SIGNATURE=$(cast wallet sign --private-key "$PRIVATE_KEY" "$SIWE_MESSAGE" 2>/dev/null)
+# ── 4. Compute SafeMessage hash and sign it ──────────────────────────
+# Safe's isValidSignature(bytes, bytes) internally wraps the message:
+#   1. keccak256(rawBytes) → messageHash
+#   2. keccak256(abi.encode(SAFE_MSG_TYPEHASH, messageHash)) → structHash
+#   3. keccak256(0x19 || 0x01 || domainSeparator || structHash) → safeMessageHash
+# The signature must be over safeMessageHash, NOT the raw SIWE message.
+# cast wallet sign --no-hash signs the raw hash without EIP-191 prefix.
+echo "── Step 2: Compute SafeMessage hash & sign"
+
+# Get Safe's domain separator on-chain
+DOMAIN_SEP=$(cast call "$SAFE_ADDRESS" "domainSeparator()(bytes32)" --rpc-url "$RPC_URL" 2>/dev/null)
+echo "   Domain separator: ${DOMAIN_SEP:0:18}..."
+
+# SAFE_MSG_TYPEHASH = keccak256("SafeMessage(bytes message)")
+SAFE_MSG_TYPEHASH=$(cast keccak "SafeMessage(bytes message)" 2>/dev/null)
+
+# Hash the raw SIWE message bytes
+SIWE_HEX=$(printf '%s' "$SIWE_MESSAGE" | xxd -p | tr -d '\n')
+MSG_HASH=$(cast keccak "0x${SIWE_HEX}" 2>/dev/null)
+
+# structHash = keccak256(abi.encode(SAFE_MSG_TYPEHASH, msgHash))
+STRUCT_ENCODED=$(cast abi-encode "f(bytes32,bytes32)" "$SAFE_MSG_TYPEHASH" "$MSG_HASH" 2>/dev/null)
+STRUCT_HASH=$(cast keccak "$STRUCT_ENCODED" 2>/dev/null)
+
+# EIP-712 final hash = keccak256(0x19 || 0x01 || domainSeparator || structHash)
+PACKED=$(cast concat-hex "0x1901" "$DOMAIN_SEP" "$STRUCT_HASH" 2>/dev/null)
+SAFE_MSG_HASH=$(cast keccak "$PACKED" 2>/dev/null)
+echo "   SafeMessage hash: ${SAFE_MSG_HASH:0:18}..."
+
+# Sign the SafeMessage hash directly (no EIP-191 wrapping)
+SIGNATURE=$(cast wallet sign --no-hash --private-key "$PRIVATE_KEY" "$SAFE_MSG_HASH" 2>/dev/null)
 echo "   Signature: ${SIGNATURE:0:20}...${SIGNATURE: -8}"
+echo "   (signed SafeMessage hash, not raw SIWE message)"
 echo ""
 
 # ── 5. Verify signature (triggers ERC-1271 on server) ───────────────
