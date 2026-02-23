@@ -4,7 +4,8 @@
 **/TestResults
 .idea
 .vscode
-**/*.nupkg
+# Allow nuget-local/*.nupkg but exclude everything else
+!nuget-local/*.nupkg
 .env
 concatenated_sources.txt
 .state/
