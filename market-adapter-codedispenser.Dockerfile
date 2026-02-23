@@ -4,6 +4,10 @@ WORKDIR /src
 # Copy global props if they exist
 COPY Directory.Build.props* ./
 
+# Copy NuGet config and local package feed (slimmed Circles.Profiles.* 1.0.2)
+COPY NuGet.Config ./
+COPY nuget-local/ nuget-local/
+
 # Copy project file first for better layer caching
 COPY Circles.Market.Adapters.CodeDispenser/Circles.Market.Adapters.CodeDispenser.csproj Circles.Market.Adapters.CodeDispenser/
 COPY Circles.Market.Shared/Circles.Market.Shared.csproj Circles.Market.Shared/
