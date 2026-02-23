@@ -16,7 +16,6 @@ using Circles.Market.Shared.Admin;
 using Circles.Profiles.Interfaces;
 using Circles.Profiles.Market;
 using Circles.Profiles.Sdk;
-using Circles.Profiles.Sdk.Utils;
 using Nethereum.Web3;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -30,13 +29,6 @@ static string SafeUrl(string url)
     // Avoid leaking userinfo/query/fragment (often used for tokens)
     var hostPort = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
     return $"{uri.Scheme}://{hostPort}";
-}
-
-static string SafeToken(string? token)
-{
-    if (string.IsNullOrEmpty(token))
-        return "[empty]";
-    return $"[redacted,len={token.Length}]";
 }
 
 static string SafeConnectionString(string conn)
@@ -84,19 +76,15 @@ publicBuilder.Services.AddRateLimiter(o =>
 
 var chainRpcUrl = Environment.GetEnvironmentVariable("RPC")
                   ?? throw new Exception("The RPC env variable is not set.");
-var ipfsRpcUrl = Environment.GetEnvironmentVariable("IPFS_RPC_URL") ??
-                 throw new Exception("The IPFS_RPC_URL env variable is not set.");
-var ipfsRpcBearer = Environment.GetEnvironmentVariable("IPFS_RPC_BEARER") ??
-                    throw new Exception("The IPFS_RPC_BEARER env variable is not set.");
-var ipfsGatewayUrl = Environment.GetEnvironmentVariable("IPFS_GATEWAY_URL") ??
-                     throw new Exception("The IPFS_GATEWAY_URL env variable is not set.");
+var pinningServiceUrl = Environment.GetEnvironmentVariable("PINNING_SERVICE_URL")
+                        ?? throw new Exception("The PINNING_SERVICE_URL env variable is not set.");
 
-// IPFS store: inner RPC client + CID-keyed caching proxy
-publicBuilder.Services.AddSingleton<IIpfsStore>(_ => new IpfsRpcApiStore(ipfsRpcUrl, ipfsRpcBearer, ipfsGatewayUrl));
+// IPFS store: pinning service HTTP client + CID-keyed caching proxy
+publicBuilder.Services.AddSingleton<IIpfsStore>(_ => new PinningServiceIpfsStore(pinningServiceUrl));
 publicBuilder.Services.Decorate<IIpfsStore, CachingIpfsStore>();
 
-// Chain + registry
-publicBuilder.Services.AddSingleton<INameRegistry>(_ => new NameRegistry(chainRpcUrl));
+// Name registry: profile CID lookups via pinning service
+publicBuilder.Services.AddSingleton<INameRegistry>(_ => new PinningServiceNameRegistry(pinningServiceUrl));
 publicBuilder.Services.AddSingleton<IChainApi>(_ =>
     new EthereumChainApi(new Web3(chainRpcUrl), Helpers.DefaultChainId));
 
@@ -266,9 +254,7 @@ var publicApp = publicBuilder.Build();
 
 // Log startup settings (redacted where needed)
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "RPC", SafeUrl(chainRpcUrl));
-publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_RPC_URL", SafeUrl(ipfsRpcUrl));
-publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_RPC_BEARER", SafeToken(ipfsRpcBearer));
-publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "IPFS_GATEWAY_URL", SafeUrl(ipfsGatewayUrl));
+publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "PINNING_SERVICE_URL", SafeUrl(pinningServiceUrl));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "POSTGRES_CONNECTION", SafeConnectionString(pgConn!));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "DB_AUTO_MIGRATE", autoMigrate);
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "AUTH_SERVICE_URL",
