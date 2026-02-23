@@ -9,11 +9,11 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Circles.Profiles.Aggregation" Version="1.0.1" />
-    <PackageReference Include="Circles.Profiles.Interfaces" Version="1.0.1" />
-    <PackageReference Include="Circles.Profiles.Market" Version="1.0.1" />
-    <PackageReference Include="Circles.Profiles.Models" Version="1.0.1" />
-    <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.1" />
+    <PackageReference Include="Circles.Profiles.Aggregation" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Interfaces" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Market" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Models" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.2" />
     <PackageReference Include="Nethereum.Web3" Version="5.8.0" />
     <PackageReference Include="Npgsql" Version="10.0.1" />

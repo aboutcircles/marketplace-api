@@ -3,10 +3,10 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Circles.Profiles.Aggregation" Version="1.0.1" />
-    <PackageReference Include="Circles.Profiles.Interfaces" Version="1.0.1" />
-    <PackageReference Include="Circles.Profiles.Market" Version="1.0.1" />
-    <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.1" />
+    <PackageReference Include="Circles.Profiles.Aggregation" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Interfaces" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Market" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.2" />
     <PackageReference Include="Npgsql" Version="10.0.1" />
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
@@ -27,13 +27,5 @@
     <ProjectReference Include="..\\Circles.Market.Auth.Siwe\\Circles.Market.Auth.Siwe.csproj" />
     <ProjectReference Include="..\Circles.Market.Shared\Circles.Market.Shared.csproj" />
     <ProjectReference Include="..\Circles.Market.Fulfillment.Core\Circles.Market.Fulfillment.Core.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <Reference Include="Circles.Profiles.Models">
-      <HintPath>../../ExtensibleProfilesDemo/Circles.Profiles.Models/bin/Debug/net9.0/Circles.Profiles.Models.dll</HintPath>
-    </Reference>
-    <Reference Include="Circles.Profiles.Models">
-      <HintPath>../../ExtensibleProfilesDemo/Circles.Profiles.Models/bin/Debug/net9.0/Circles.Profiles.Models.dll</HintPath>
-    </Reference>
   </ItemGroup>
 </Project>
