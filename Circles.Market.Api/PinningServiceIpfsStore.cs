@@ -29,7 +29,7 @@ public sealed class PinningServiceIpfsStore : IIpfsStore, IAsyncDisposable
     public async Task<string> AddStringAsync(string json, bool pin = true, CancellationToken ct = default)
     {
         using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-        using var resp = await _http.PostAsync($"{_baseUrl}/api/pin", content, ct);
+        using var resp = await _http.PostAsync($"{_baseUrl}/pin", content, ct);
         resp.EnsureSuccessStatusCode();
         return await ExtractCidAsync(resp, ct);
     }
@@ -38,7 +38,7 @@ public sealed class PinningServiceIpfsStore : IIpfsStore, IAsyncDisposable
     {
         using var content = new ByteArrayContent(bytes.ToArray());
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
-        using var resp = await _http.PostAsync($"{_baseUrl}/api/pin-media", content, ct);
+        using var resp = await _http.PostAsync($"{_baseUrl}/pin-media", content, ct);
         resp.EnsureSuccessStatusCode();
         return await ExtractCidAsync(resp, ct);
     }
@@ -47,7 +47,7 @@ public sealed class PinningServiceIpfsStore : IIpfsStore, IAsyncDisposable
     {
         ValidateCid(cid);
         using var resp = await _http.GetAsync(
-            $"{_baseUrl}/api/raw/{Uri.EscapeDataString(cid)}",
+            $"{_baseUrl}/raw/{Uri.EscapeDataString(cid)}",
             HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
 
@@ -72,7 +72,7 @@ public sealed class PinningServiceIpfsStore : IIpfsStore, IAsyncDisposable
     {
         ValidateCid(cid);
         using var resp = await _http.GetAsync(
-            $"{_baseUrl}/api/raw/{Uri.EscapeDataString(cid)}",
+            $"{_baseUrl}/raw/{Uri.EscapeDataString(cid)}",
             HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
 

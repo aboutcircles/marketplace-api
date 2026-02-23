@@ -30,7 +30,7 @@ public sealed class PinningServiceNameRegistry : INameRegistry, IDisposable
             throw new ArgumentException($"Invalid Ethereum address: {avatar}", nameof(avatar));
 
         using var resp = await _http.GetAsync(
-            $"{_baseUrl}/api/profile/{Uri.EscapeDataString(avatar)}", ct);
+            $"{_baseUrl}/profile/{Uri.EscapeDataString(avatar)}", ct);
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
             return null;
