@@ -4,6 +4,10 @@ WORKDIR /src
 # Copy global props if they exist
 COPY Directory.Build.props* ./
 
+# Copy NuGet config and local package feed (slimmed Circles.Profiles.* 1.0.2)
+COPY NuGet.Config ./
+COPY nuget-local/ nuget-local/
+
 # Copy project file first for better layer caching
 COPY Circles.Market.Adapters.Odoo/Circles.Market.Adapters.Odoo.csproj Circles.Market.Adapters.Odoo/
 COPY Circles.Market.Shared/Circles.Market.Shared.csproj Circles.Market.Shared/
@@ -18,13 +22,14 @@ COPY Circles.Market.Auth.Siwe/ Circles.Market.Auth.Siwe/
 COPY Circles.Market.Fulfillment.Core/ Circles.Market.Fulfillment.Core/
 RUN dotnet publish Circles.Market.Adapters.Odoo/Circles.Market.Adapters.Odoo.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS final
+
+# Create non-root user with fixed UID 10000 (consistent across all circles services)
+RUN addgroup -S -g 10000 circles && adduser -S -u 10000 -G circles circles
+
 WORKDIR /app
+COPY --from=build --chown=circles:circles /app/publish .
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
- && rm -rf /var/lib/apt/lists/*
-
-COPY --from=build /app/publish .
+USER circles
 EXPOSE 5678
 ENTRYPOINT ["dotnet", "Circles.Market.Adapters.Odoo.dll"]

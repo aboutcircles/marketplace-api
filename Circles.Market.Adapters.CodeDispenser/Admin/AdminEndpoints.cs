@@ -9,10 +9,7 @@ public static class AdminEndpoints
 {
     public static void MapCodeDispenserAdminApi(this WebApplication app, string adminBasePath, string postgresConn)
     {
-        var group = app.MapGroup(adminBasePath).RequireAuthorization(new AuthorizeAttribute
-        {
-            AuthenticationSchemes = AdminAuthConstants.Scheme
-        });
+        var group = app.MapGroup(adminBasePath).RequireAuthorization();
 
         group.MapGet("/health", () => Results.Json(new { ok = true }));
 
