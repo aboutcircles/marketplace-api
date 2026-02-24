@@ -3,15 +3,39 @@ using Circles.Market.Api.Routing;
 using Circles.Market.Shared.Admin;
 using Circles.Profiles.Market;
 using Microsoft.AspNetCore.Mvc;
+using Npgsql;
 
 namespace Circles.Market.Api.Service;
 
 public static class ServiceEndpoints
 {
-    public static void MapServiceApi(this IEndpointRouteBuilder app)
+    public static void MapServiceApi(this IEndpointRouteBuilder app, string pgConnectionString)
     {
-        // Health endpoint for container orchestration
-        app.MapGet("/health", () => Results.Json(new { ok = true }));
+        // Readiness endpoint: checks critical dependencies before reporting healthy
+        app.MapGet("/health", async (CancellationToken ct) =>
+        {
+            var checks = new Dictionary<string, string>();
+            var allOk = true;
+
+            // PostgreSQL connectivity check
+            try
+            {
+                await using var conn = new NpgsqlConnection(pgConnectionString);
+                await conn.OpenAsync(ct);
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT 1";
+                await cmd.ExecuteScalarAsync(ct);
+                checks["postgres"] = "ok";
+            }
+            catch (Exception)
+            {
+                checks["postgres"] = "failed";
+                allOk = false;
+            }
+
+            var statusCode = allOk ? 200 : 503;
+            return Results.Json(new { ok = allOk, checks }, statusCode: statusCode);
+        });
 
         app.MapGet("/api/operator/{op}/catalog",
                 (string op,

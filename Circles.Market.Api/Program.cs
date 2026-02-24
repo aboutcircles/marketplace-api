@@ -305,8 +305,8 @@ publicApp.UseAuthentication();
 publicApp.UseAuthorization();
 publicApp.UseHttpMetrics();
 
-// Health endpoint for container orchestration
-publicApp.MapServiceApi();
+// Health/readiness endpoint for container orchestration
+publicApp.MapServiceApi(pgConn!);
 
 publicApp.MapCartApi();
 publicApp.MapAuthProxy("/api/auth");

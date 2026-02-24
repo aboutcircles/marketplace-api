@@ -8,6 +8,7 @@ using Circles.Market.Fulfillment.Core;
 using Circles.Market.Shared;
 using Circles.Market.Shared.Admin;
 using Circles.Market.Shared.Auth;
+using Npgsql;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
@@ -114,8 +115,30 @@ if (!hasUrls)
 
 publicApp.UseHttpMetrics();
 
-// Health endpoint for orchestration
-publicApp.MapGet("/health", () => Results.Json(new { ok = true }));
+// Readiness endpoint: checks critical dependencies before reporting healthy
+publicApp.MapGet("/health", async (CancellationToken ct) =>
+{
+    var checks = new Dictionary<string, string>();
+    var allOk = true;
+
+    try
+    {
+        await using var conn = new NpgsqlConnection(connString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1";
+        await cmd.ExecuteScalarAsync(ct);
+        checks["postgres"] = "ok";
+    }
+    catch (Exception)
+    {
+        checks["postgres"] = "failed";
+        allOk = false;
+    }
+
+    var statusCode = allOk ? 200 : 503;
+    return Results.Json(new { ok = allOk, checks }, statusCode: statusCode);
+});
 
 // ---------------------------------------------------------------------
 // GET /inventory
