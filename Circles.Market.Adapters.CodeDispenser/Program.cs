@@ -97,8 +97,30 @@ using (var scope = publicApp.Services.CreateScope())
 
 publicApp.UseHttpMetrics();
 
-// Health endpoint
-publicApp.MapGet("/health", () => Results.Json(new { ok = true }));
+// Readiness endpoint: checks critical dependencies before reporting healthy
+publicApp.MapGet("/health", async (CancellationToken ct) =>
+{
+    var checks = new Dictionary<string, string>();
+    var allOk = true;
+
+    try
+    {
+        await using var conn = new NpgsqlConnection(postgresConn);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1";
+        await cmd.ExecuteScalarAsync(ct);
+        checks["postgres"] = "ok";
+    }
+    catch (Exception)
+    {
+        checks["postgres"] = "failed";
+        allOk = false;
+    }
+
+    var statusCode = allOk ? 200 : 503;
+    return Results.Json(new { ok = allOk, checks }, statusCode: statusCode);
+});
 
 static bool IsValidSeller(string seller)
 {
