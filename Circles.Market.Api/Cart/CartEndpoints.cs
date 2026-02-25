@@ -383,6 +383,9 @@ public static class CartEndpoints
                 return Error(StatusCodes.Status409Conflict, "Order already exists");
             }
 
+            Metrics.MarketplaceMetrics.OrdersCreated.Inc();
+            Metrics.MarketplaceMetrics.OrderValueCrc.Observe((double)(order.TotalPaymentDue?.Price ?? 0));
+
             // Return orderId as the public identifier (non-secret) + paymentReference
             var payload = new { orderId, basketId, paymentReference, orderCid = (string?)null };
             return Results.Json(
