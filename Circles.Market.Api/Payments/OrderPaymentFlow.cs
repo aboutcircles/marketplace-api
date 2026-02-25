@@ -153,6 +153,17 @@ public sealed class OrderPaymentFlow : IOrderPaymentFlow
         if (updatedOrder)
         {
             _log.LogInformation("Marked order finalized: ref={Ref}", record!.PaymentReference);
+
+            Metrics.MarketplaceMetrics.OrdersFinalized.Inc();
+            foreach (var (orderId, _, _) in _orders.GetByPaymentReference(record!.PaymentReference))
+            {
+                var snapshot = _orders.Get(orderId);
+                if (snapshot?.TotalPaymentDue?.Price is > 0)
+                {
+                    Metrics.MarketplaceMetrics.PaymentAmountCrc.Inc((double)snapshot.TotalPaymentDue.Price.Value);
+                }
+            }
+
             // Fire hooks: Finalized and StatusChanged(PaymentComplete)
             _ = Task.Run((Func<Task>)(async () =>
             {
