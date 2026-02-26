@@ -406,17 +406,75 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
         var odooCt = linked.Token;
 
-        var partnerId = odoo!.GetSettings().SalePartnerId;
-        if (!partnerId.HasValue || partnerId.Value <= 0)
+        static string? Normalize(string? value)
         {
-            const string msg = "sale_partner_id not configured in odoo_connections for this seller/chain";
-            log.LogError(msg);
-            await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, jobCt);
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
 
-            return Results.Json(
-                JsonLdResult("error", req.OrderId, req.PaymentReference, sellerLower, null, msg, Array.Empty<string>()),
-                (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd,
-                statusCode: 500);
+        static string? BuildCustomerName(FulfillmentRequest request)
+        {
+            var explicitName = Normalize(request.Customer?.Name);
+            if (explicitName != null) return explicitName;
+
+            var given = Normalize(request.Customer?.GivenName);
+            var family = Normalize(request.Customer?.FamilyName);
+
+            if (given != null && family != null) return $"{given} {family}";
+            if (given != null) return given;
+            if (family != null) return family;
+
+            return Normalize(request.Buyer);
+        }
+
+        static bool HasAddress(FulfillmentAddress? address)
+        {
+            return Normalize(address?.StreetAddress) != null
+                || Normalize(address?.AddressLocality) != null
+                || Normalize(address?.PostalCode) != null
+                || Normalize(address?.AddressCountry) != null;
+        }
+
+        int partnerIdToUse;
+        var customerName = BuildCustomerName(req);
+        bool hasCustomerInput = customerName != null || HasAddress(req.ShippingAddress) || HasAddress(req.BillingAddress);
+
+        if (hasCustomerInput)
+        {
+            int? countryId = await odoo.ResolveCountryIdAsync(
+                Normalize(req.ShippingAddress?.AddressCountry) ?? Normalize(req.BillingAddress?.AddressCountry),
+                odooCt);
+
+            var createPartner = new PartnerCreateDto
+            {
+                Name = customerName ?? $"Customer {req.OrderId}",
+                Email = Normalize(req.ContactPoint?.Email),
+                Phone = Normalize(req.ContactPoint?.Telephone),
+                Street = Normalize(req.ShippingAddress?.StreetAddress),
+                City = Normalize(req.ShippingAddress?.AddressLocality),
+                Zip = Normalize(req.ShippingAddress?.PostalCode),
+                CountryId = countryId
+            };
+
+            partnerIdToUse = await odoo.CreatePartnerAsync(createPartner, odooCt);
+            log.LogInformation("Created Odoo customer partner {PartnerId} for order {OrderId}", partnerIdToUse, req.OrderId);
+        }
+        else
+        {
+            var fallbackPartnerId = odoo!.GetSettings().SalePartnerId;
+            if (!fallbackPartnerId.HasValue || fallbackPartnerId.Value <= 0)
+            {
+                const string msg = "No customer data provided and sale_partner_id not configured in odoo_connections for this seller/chain";
+                log.LogError(msg);
+                await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, jobCt);
+
+                return Results.Json(
+                    JsonLdResult("error", req.OrderId, req.PaymentReference, sellerLower, null, msg, Array.Empty<string>()),
+                    (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd,
+                    statusCode: 500);
+            }
+
+            partnerIdToUse = fallbackPartnerId.Value;
+            log.LogInformation("No customer payload present; using configured sale_partner_id {PartnerId}", partnerIdToUse);
         }
 
         // Build sale order lines: SKU -> mapping default_code -> product.product id
@@ -452,7 +510,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         {
             var create = new SaleOrderCreateDto
             {
-                PartnerId = partnerId.Value,
+                PartnerId = partnerIdToUse,
                 Lines = lines
             };
 

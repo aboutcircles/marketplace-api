@@ -81,6 +81,10 @@ public sealed class HttpOrderFulfillmentClient : IOrderFulfillmentClient
             orderId,
             paymentReference,
             buyer = order.Customer?.Id,
+            customer = BuildCustomerPayload(order.Customer),
+            shippingAddress = BuildAddressPayload(order.ShippingAddress),
+            billingAddress = BuildAddressPayload(order.BillingAddress),
+            contactPoint = BuildContactPointPayload(order.SellerContact),
             items,
             trigger
         };
@@ -118,6 +122,62 @@ public sealed class HttpOrderFulfillmentClient : IOrderFulfillmentClient
             using var doc = JsonDocument.Parse(bytes);
             return doc.RootElement.Clone();
         }
+    }
+
+    private static object? BuildCustomerPayload(Cart.SchemaOrgPersonId? customer)
+    {
+        if (customer == null)
+        {
+            return null;
+        }
+
+        string? givenName = string.IsNullOrWhiteSpace(customer.GivenName) ? null : customer.GivenName.Trim();
+        string? familyName = string.IsNullOrWhiteSpace(customer.FamilyName) ? null : customer.FamilyName.Trim();
+
+        string? fullName = (givenName, familyName) switch
+        {
+            (not null, not null) => $"{givenName} {familyName}",
+            (not null, null) => givenName,
+            (null, not null) => familyName,
+            _ => null
+        };
+
+        return new
+        {
+            name = fullName,
+            givenName,
+            familyName
+        };
+    }
+
+    private static object? BuildAddressPayload(Cart.PostalAddress? address)
+    {
+        if (address == null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            streetAddress = address.StreetAddress,
+            addressLocality = address.AddressLocality,
+            postalCode = address.PostalCode,
+            addressCountry = address.AddressCountry
+        };
+    }
+
+    private static object? BuildContactPointPayload(Cart.ContactPoint? contactPoint)
+    {
+        if (contactPoint == null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            email = contactPoint.Email,
+            telephone = contactPoint.Telephone
+        };
     }
 
     private static (string? seller, long chainId) TryParseFulfillmentPath(Uri uri)

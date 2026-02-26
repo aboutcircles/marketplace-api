@@ -12,9 +12,11 @@ public class HttpOrderFulfillmentClientTests
     private sealed class CapturingHandler : HttpMessageHandler
     {
         public HttpRequestMessage? CapturedRequest { get; private set; }
+        public string? CapturedRequestBody { get; private set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             CapturedRequest = request;
+            CapturedRequestBody = request.Content?.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
             var json = JsonSerializer.Serialize(new { ok = true });
             var resp = new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -66,7 +68,26 @@ public class HttpOrderFulfillmentClientTests
         {
             OrderNumber = "ord_test",
             PaymentReference = "pay_test",
-            Customer = new SchemaOrgPersonId { Id = "eip155:100:0xabc" },
+            Customer = new SchemaOrgPersonId { Id = "eip155:100:0xabc", GivenName = "Alice", FamilyName = "Doe" },
+            ShippingAddress = new PostalAddress
+            {
+                StreetAddress = "Main St 1",
+                AddressLocality = "Berlin",
+                PostalCode = "10115",
+                AddressCountry = "DE"
+            },
+            BillingAddress = new PostalAddress
+            {
+                StreetAddress = "Billing St 2",
+                AddressLocality = "Berlin",
+                PostalCode = "10117",
+                AddressCountry = "DE"
+            },
+            SellerContact = new ContactPoint
+            {
+                Email = "alice@example.com",
+                Telephone = "+49123456"
+            },
             OrderedItem = new List<OrderItemLine>
             {
                 new() { OrderQuantity = 1, OrderedItem = new OrderedItemRef { Sku = "sku1" } }
@@ -80,6 +101,16 @@ public class HttpOrderFulfillmentClientTests
         // Assert no Authorization header at all
         Assert.That(req.Headers.Authorization, Is.Null, "Authorization header must not be set");
         Assert.That(req.Headers.Contains("Authorization"), Is.False, "Authorization header must not be present");
+
+        var requestBody = handler.CapturedRequestBody;
+        Assert.That(requestBody, Is.Not.Null.And.Not.Empty);
+        using var doc = JsonDocument.Parse(requestBody);
+        Assert.That(doc.RootElement.GetProperty("customer").GetProperty("name").GetString(), Is.EqualTo("Alice Doe"));
+        Assert.That(doc.RootElement.GetProperty("shippingAddress").GetProperty("streetAddress").GetString(), Is.EqualTo("Main St 1"));
+        Assert.That(doc.RootElement.GetProperty("billingAddress").GetProperty("streetAddress").GetString(), Is.EqualTo("Billing St 2"));
+        Assert.That(doc.RootElement.GetProperty("contactPoint").GetProperty("email").GetString(), Is.EqualTo("alice@example.com"));
+        Assert.That(doc.RootElement.GetProperty("contactPoint").GetProperty("telephone").GetString(), Is.EqualTo("+49123456"));
+
         // basic sanity: response parsed
         Assert.That(result.ValueKind, Is.EqualTo(JsonValueKind.Object));
         Assert.That(result.TryGetProperty("ok", out var ok) && ok.GetBoolean(), Is.True);

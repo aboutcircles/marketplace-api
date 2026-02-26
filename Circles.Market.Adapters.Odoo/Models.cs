@@ -146,6 +146,17 @@ public class SaleOrderLineDto
     public decimal? UnitPrice { get; set; }
 }
 
+public class PartnerCreateDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public string? Street { get; set; }
+    public string? City { get; set; }
+    public string? Zip { get; set; }
+    public int? CountryId { get; set; }
+}
+
 public class OdooProductVariantMinimalDto
 {
     [System.Text.Json.Serialization.JsonPropertyName("id")]
@@ -242,6 +253,18 @@ public class OdooPartnerMinimalDto
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = default!;
+}
+
+public class OdooCountryMinimalDto
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
 }
 
 public class OperationDetailsDto

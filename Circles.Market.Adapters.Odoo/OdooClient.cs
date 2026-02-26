@@ -354,6 +354,92 @@ public class OdooClient
         return ParseOdooCreateResultToId(result);
     }
 
+    public async Task<int> CreatePartnerAsync(PartnerCreateDto partner, CancellationToken cancellationToken = default)
+    {
+        if (partner == null) throw new ArgumentNullException(nameof(partner));
+        if (string.IsNullOrWhiteSpace(partner.Name)) throw new ArgumentException("Partner name is required", nameof(partner));
+
+        var createVals = new Dictionary<string, object>
+        {
+            ["name"] = partner.Name.Trim()
+        };
+
+        if (!string.IsNullOrWhiteSpace(partner.Email)) createVals["email"] = partner.Email.Trim();
+        if (!string.IsNullOrWhiteSpace(partner.Phone)) createVals["phone"] = partner.Phone.Trim();
+        if (!string.IsNullOrWhiteSpace(partner.Street)) createVals["street"] = partner.Street.Trim();
+        if (!string.IsNullOrWhiteSpace(partner.City)) createVals["city"] = partner.City.Trim();
+        if (!string.IsNullOrWhiteSpace(partner.Zip)) createVals["zip"] = partner.Zip.Trim();
+        if (partner.CountryId.HasValue && partner.CountryId.Value > 0) createVals["country_id"] = partner.CountryId.Value;
+
+        object[] positionalArgs = new object[] { createVals };
+
+        JsonElement result = await ExecuteKwAsync<JsonElement>(
+            model: "res.partner",
+            method: "create",
+            positionalArgs: positionalArgs,
+            keywordArgs: null,
+            cancellationToken: cancellationToken
+        );
+
+        if (result.ValueKind == JsonValueKind.Number)
+        {
+            return result.GetInt32();
+        }
+
+        if (result.ValueKind == JsonValueKind.Array && result.GetArrayLength() == 1 && result[0].ValueKind == JsonValueKind.Number)
+        {
+            return result[0].GetInt32();
+        }
+
+        throw new InvalidOperationException($"Unexpected res.partner.create result kind={result.ValueKind}: {result}");
+    }
+
+    public async Task<int?> ResolveCountryIdAsync(string? countryInput, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(countryInput))
+        {
+            return null;
+        }
+
+        string normalized = countryInput.Trim();
+        string upper = normalized.ToUpperInvariant();
+
+        object[] byCodeDomain = new object[]
+        {
+            new object[] { "code", "=", upper }
+        };
+
+        string[] fields = new[] { "id", "name", "code" };
+
+        var byCode = await SearchReadAsync<OdooCountryMinimalDto>(
+            "res.country",
+            byCodeDomain,
+            fields,
+            limit: 1,
+            offset: 0,
+            cancellationToken: cancellationToken);
+
+        if (byCode is { Length: > 0 })
+        {
+            return byCode[0].Id;
+        }
+
+        object[] byNameDomain = new object[]
+        {
+            new object[] { "name", "ilike", normalized }
+        };
+
+        var byName = await SearchReadAsync<OdooCountryMinimalDto>(
+            "res.country",
+            byNameDomain,
+            fields,
+            limit: 1,
+            offset: 0,
+            cancellationToken: cancellationToken);
+
+        return byName is { Length: > 0 } ? byName[0].Id : null;
+    }
+
     private static int ParseOdooCreateResultToId(JsonElement result)
     {
         if (result.ValueKind == JsonValueKind.Number)
