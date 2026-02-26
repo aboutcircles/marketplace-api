@@ -13,6 +13,14 @@ public sealed class FulfillmentRequest
 
     public string? Buyer { get; set; }
 
+    public FulfillmentCustomer? Customer { get; set; }
+
+    public FulfillmentAddress? ShippingAddress { get; set; }
+
+    public FulfillmentAddress? BillingAddress { get; set; }
+
+    public FulfillmentContactPoint? ContactPoint { get; set; }
+
     [Required]
     public List<FulfillmentItem> Items { get; set; } = new();
 
@@ -36,6 +44,27 @@ public sealed class FulfillmentRequest
         Trigger = t;
         return true;
     }
+}
+
+public sealed class FulfillmentCustomer
+{
+    public string? Name { get; set; }
+    public string? GivenName { get; set; }
+    public string? FamilyName { get; set; }
+}
+
+public sealed class FulfillmentAddress
+{
+    public string? StreetAddress { get; set; }
+    public string? AddressLocality { get; set; }
+    public string? PostalCode { get; set; }
+    public string? AddressCountry { get; set; }
+}
+
+public sealed class FulfillmentContactPoint
+{
+    public string? Email { get; set; }
+    public string? Telephone { get; set; }
 }
 
 public sealed class FulfillmentItem

@@ -81,9 +81,18 @@ public sealed class AdminOdooProductDto
     [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
     [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
     [JsonPropertyName("odooProductCode")] public string OdooProductCode { get; set; } = string.Empty;
+    [JsonPropertyName("localAvailableQty")] public long? LocalAvailableQty { get; set; }
     [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; }
     [JsonPropertyName("revokedAt")] public DateTimeOffset? RevokedAt { get; set; }
+}
+
+public sealed class AdminOdooStockUpsertRequest
+{
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
+    [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
+    [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
+    [JsonPropertyName("availableQty")] public long AvailableQty { get; set; }
 }
 
 public sealed class AdminOdooProductVariantDto

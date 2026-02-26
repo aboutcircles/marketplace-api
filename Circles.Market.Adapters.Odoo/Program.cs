@@ -38,6 +38,10 @@ publicBuilder.Services.AddSingleton<IOdooFulfillmentRunStore>(sp =>
         connString,
         sp.GetRequiredService<ILogger<PostgresFulfillmentRunStore>>()));
 publicBuilder.Services.AddSingleton<IFulfillmentRunStore>(sp => sp.GetRequiredService<IOdooFulfillmentRunStore>());
+publicBuilder.Services.AddSingleton<IInventoryStockStore>(sp =>
+    new PostgresInventoryStockStore(
+        connString,
+        sp.GetRequiredService<ILogger<PostgresInventoryStockStore>>()));
 
 // Typed HttpClient for Odoo JSON-RPC.
 publicBuilder.Services.AddHttpClient<OdooClient>();
@@ -154,6 +158,7 @@ publicApp.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
         ITrustedCallerAuth auth,
         IOdooConnectionResolver odooResolver,
         IInventoryMappingResolver mapper,
+        IInventoryStockStore stockStore,
         IHttpClientFactory httpFactory,
         ILoggerFactory loggerFactory,
         CancellationToken ct) =>
@@ -174,6 +179,22 @@ publicApp.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
 
         var (odooError, odoo) = await ResolveOdoo(chainId, seller, odooResolver, httpFactory, loggerFactory, ct);
         if (odooError != null) return odooError;
+
+        var localAvailableQty = await stockStore.GetAvailableQtyAsync(chainId, seller, sku, ct);
+        if (localAvailableQty.HasValue)
+        {
+            long localValue = localAvailableQty.Value;
+            if (localValue < 0) localValue = 0;
+
+            var localPayload = new Dictionary<string, object?>
+            {
+                ["@type"] = "QuantitativeValue",
+                ["value"] = localValue,
+                ["unitCode"] = "C62"
+            };
+
+            return Results.Json(localPayload, (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd);
+        }
 
         OdooProductTemplateStockDto? stock;
         try
@@ -225,6 +246,7 @@ publicApp.MapGet("/availability/{chainId}/{seller}/{sku}", async (
         ITrustedCallerAuth auth,
         IOdooConnectionResolver odooResolver,
         IInventoryMappingResolver mapper,
+        IInventoryStockStore stockStore,
         IHttpClientFactory httpFactory,
         ILoggerFactory loggerFactory,
         CancellationToken ct) =>
@@ -245,6 +267,19 @@ publicApp.MapGet("/availability/{chainId}/{seller}/{sku}", async (
 
         var (odooError, odoo) = await ResolveOdoo(chainId, seller, odooResolver, httpFactory, loggerFactory, ct);
         if (odooError != null) return odooError;
+
+        var localAvailableQty = await stockStore.GetAvailableQtyAsync(chainId, seller, sku, ct);
+        if (localAvailableQty.HasValue)
+        {
+            string localAvailability = localAvailableQty.Value > 0
+                ? "https://schema.org/InStock"
+                : "https://schema.org/OutOfStock";
+
+            return Results.Json(
+                localAvailability,
+                (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd
+            );
+        }
 
         OdooProductTemplateStockDto? stock;
         try
@@ -292,6 +327,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         ITrustedCallerAuth auth,
         IOdooConnectionResolver odooResolver,
         IInventoryMappingResolver mapper,
+        IInventoryStockStore stockStore,
         IOdooFulfillmentRunStore runStore,
         IHostApplicationLifetime lifetime,
         IHttpClientFactory httpFactory,
@@ -406,21 +442,80 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
         var odooCt = linked.Token;
 
-        var partnerId = odoo!.GetSettings().SalePartnerId;
-        if (!partnerId.HasValue || partnerId.Value <= 0)
+        static string? Normalize(string? value)
         {
-            const string msg = "sale_partner_id not configured in odoo_connections for this seller/chain";
-            log.LogError(msg);
-            await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, jobCt);
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
 
-            return Results.Json(
-                JsonLdResult("error", req.OrderId, req.PaymentReference, sellerLower, null, msg, Array.Empty<string>()),
-                (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd,
-                statusCode: 500);
+        static string? BuildCustomerName(FulfillmentRequest request)
+        {
+            var explicitName = Normalize(request.Customer?.Name);
+            if (explicitName != null) return explicitName;
+
+            var given = Normalize(request.Customer?.GivenName);
+            var family = Normalize(request.Customer?.FamilyName);
+
+            if (given != null && family != null) return $"{given} {family}";
+            if (given != null) return given;
+            if (family != null) return family;
+
+            return Normalize(request.Buyer);
+        }
+
+        static bool HasAddress(FulfillmentAddress? address)
+        {
+            return Normalize(address?.StreetAddress) != null
+                || Normalize(address?.AddressLocality) != null
+                || Normalize(address?.PostalCode) != null
+                || Normalize(address?.AddressCountry) != null;
+        }
+
+        int partnerIdToUse;
+        var customerName = BuildCustomerName(req);
+        bool hasCustomerInput = customerName != null || HasAddress(req.ShippingAddress) || HasAddress(req.BillingAddress);
+
+        if (hasCustomerInput)
+        {
+            int? countryId = await odoo.ResolveCountryIdAsync(
+                Normalize(req.ShippingAddress?.AddressCountry) ?? Normalize(req.BillingAddress?.AddressCountry),
+                odooCt);
+
+            var createPartner = new PartnerCreateDto
+            {
+                Name = customerName ?? $"Customer {req.OrderId}",
+                Email = Normalize(req.ContactPoint?.Email),
+                Phone = Normalize(req.ContactPoint?.Telephone),
+                Street = Normalize(req.ShippingAddress?.StreetAddress),
+                City = Normalize(req.ShippingAddress?.AddressLocality),
+                Zip = Normalize(req.ShippingAddress?.PostalCode),
+                CountryId = countryId
+            };
+
+            partnerIdToUse = await odoo.CreatePartnerAsync(createPartner, odooCt);
+            log.LogInformation("Created Odoo customer partner {PartnerId} for order {OrderId}", partnerIdToUse, req.OrderId);
+        }
+        else
+        {
+            var fallbackPartnerId = odoo!.GetSettings().SalePartnerId;
+            if (!fallbackPartnerId.HasValue || fallbackPartnerId.Value <= 0)
+            {
+                const string msg = "No customer data provided and sale_partner_id not configured in odoo_connections for this seller/chain";
+                log.LogError(msg);
+                await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, jobCt);
+
+                return Results.Json(
+                    JsonLdResult("error", req.OrderId, req.PaymentReference, sellerLower, null, msg, Array.Empty<string>()),
+                    (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd,
+                    statusCode: 500);
+            }
+
+            partnerIdToUse = fallbackPartnerId.Value;
+            log.LogInformation("No customer payload present; using configured sale_partner_id {PartnerId}", partnerIdToUse);
         }
 
         // Build sale order lines: SKU -> mapping default_code -> product.product id
         var lines = new List<SaleOrderLineDto>();
+        var decrementedLocalStock = new List<(string Sku, long Quantity)>();
 
         foreach (var item in req.Items)
         {
@@ -429,6 +524,28 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
             int qty = (int)Math.Floor(item.Quantity);
             if (qty < 1) qty = 1;
+
+            var localAvailableQty = await stockStore.GetAvailableQtyAsync(chainId, sellerLower, item.Sku, odooCt);
+            if (localAvailableQty.HasValue)
+            {
+                bool decremented = await stockStore.TryDecrementAsync(chainId, sellerLower, item.Sku, qty, odooCt);
+                if (!decremented)
+                {
+                    foreach (var d in decrementedLocalStock)
+                    {
+                        await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Quantity, odooCt);
+                    }
+
+                    string msg = $"Insufficient local stock for sku={item.Sku}";
+                    await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, jobCt);
+                    return Results.Json(
+                        JsonLdResult("error", req.OrderId, req.PaymentReference, sellerLower, item.Sku, msg, new[] { "insufficientStock" }),
+                        (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd,
+                        statusCode: 409);
+                }
+
+                decrementedLocalStock.Add((item.Sku, qty));
+            }
 
             int productVariantId = await odoo.ResolveProductVariantIdByCodeAsync(mapping.OdooProductCode, odooCt);
 
@@ -442,6 +559,11 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
         if (lines.Count == 0)
         {
+            foreach (var d in decrementedLocalStock)
+            {
+                await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Quantity, jobCt);
+            }
+
             await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, jobCt);
             return Results.Json(
                 JsonLdResult("notApplicable", req.OrderId, req.PaymentReference, sellerLower, null, "No items mapped to Odoo", Array.Empty<string>()),
@@ -452,7 +574,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         {
             var create = new SaleOrderCreateDto
             {
-                PartnerId = partnerId.Value,
+                PartnerId = partnerIdToUse,
                 Lines = lines
             };
 
@@ -479,6 +601,20 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         }
         catch (Exception ex)
         {
+            foreach (var d in decrementedLocalStock)
+            {
+                try
+                {
+                    await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Quantity, jobCt);
+                }
+                catch (Exception releaseEx)
+                {
+                    log.LogError(releaseEx,
+                        "Failed to compensate local stock decrement for seller={Seller} chain={Chain} sku={Sku} qty={Qty}",
+                        sellerLower, chainId, d.Sku, d.Quantity);
+                }
+            }
+
             log.LogError(ex, "Failed to create/confirm sale order for order {OrderId}", req.OrderId);
 
             string msg = ex.Message;

@@ -464,6 +464,7 @@ public static class CartEndpoints
             Broker = new SchemaOrgOrgId { Id = b.Operator is null ? null : $"eip155:{b.ChainId}:{b.Operator}" },
             BillingAddress = b.BillingAddress,
             ShippingAddress = b.ShippingAddress,
+            SellerContact = b.ContactPoint,
         };
         foreach (var it in b.Items)
         {

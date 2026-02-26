@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Circles.Market.Adapters.Odoo;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -243,5 +244,103 @@ public class OdooClientTests
         Assert.That(result!.Id, Is.EqualTo(5));
         Assert.That(result.CarrierId, Is.Null);
         Assert.That(result.CarrierTrackingRef, Is.Null);
+    }
+
+    [Test]
+    public async Task CreatePartnerAsync_ShouldIncludeCountryId_WhenProvided()
+    {
+        string? capturedBody = null;
+
+        var handlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handlerMock
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync((HttpRequestMessage request, CancellationToken _) =>
+            {
+                capturedBody = request.Content is null ? null : request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                return new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = JsonContent.Create(new { jsonrpc = "2.0", id = 1, result = 99 })
+                };
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var settings = new OdooSettings
+        {
+            BaseUrl = "https://odoo.example.com",
+            Db = "testdb",
+            UserId = 1,
+            Key = "password"
+        };
+
+        var client = new OdooClient(httpClient, settings, NullLogger<OdooClient>.Instance);
+        await client.UpdateBaseAddressAsync(CancellationToken.None);
+
+        var partnerId = await client.CreatePartnerAsync(new PartnerCreateDto
+        {
+            Name = "Alice",
+            Email = "alice@example.com",
+            Phone = "+491234",
+            Street = "Main St 1",
+            City = "Berlin",
+            Zip = "10115",
+            CountryId = 56
+        });
+
+        Assert.That(partnerId, Is.EqualTo(99));
+        Assert.That(capturedBody, Is.Not.Null.And.Not.Empty);
+
+        using var doc = JsonDocument.Parse(capturedBody!);
+        var args = doc.RootElement.GetProperty("params").GetProperty("args");
+        var createVals = args[5][0];
+        Assert.That(createVals.GetProperty("country_id").GetInt32(), Is.EqualTo(56));
+    }
+
+    [Test]
+    public async Task ResolveCountryIdAsync_ShouldResolveByCode_First()
+    {
+        int call = 0;
+        var handlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handlerMock
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(() =>
+            {
+                call++;
+                return new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = JsonContent.Create(new
+                    {
+                        jsonrpc = "2.0",
+                        id = 1,
+                        result = call == 1
+                            ? new[] { new { id = 56, name = "Germany", code = "DE" } }
+                            : Array.Empty<object>()
+                    })
+                };
+            });
+
+        var httpClient = new HttpClient(handlerMock.Object);
+        var settings = new OdooSettings
+        {
+            BaseUrl = "https://odoo.example.com",
+            Db = "testdb",
+            UserId = 1,
+            Key = "password"
+        };
+
+        var client = new OdooClient(httpClient, settings, NullLogger<OdooClient>.Instance);
+        await client.UpdateBaseAddressAsync(CancellationToken.None);
+
+        var countryId = await client.ResolveCountryIdAsync("de");
+        Assert.That(countryId, Is.EqualTo(56));
     }
 }

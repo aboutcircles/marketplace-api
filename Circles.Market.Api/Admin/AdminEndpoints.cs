@@ -317,6 +317,79 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             return Results.Json(mappings ?? new List<AdminOdooProductDto>());
         });
 
+        group.MapGet("/odoo-stock/{chainId:long}/{seller}/{sku}", async (
+            HttpContext ctx,
+            long chainId,
+            string seller,
+            string sku,
+            IHttpClientFactory httpClientFactory,
+            CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            var odooClient = httpClientFactory.CreateClient("odoo-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                $"/admin/stock/{chainId}/{Uri.EscapeDataString(sellerNorm)}/{Uri.EscapeDataString(skuNorm)}");
+            req.Headers.Authorization = bearerHeader;
+
+            using var resp = await odooClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return Results.NotFound(new { error = "stock not configured" });
+            if (!resp.IsSuccessStatusCode)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            var payload = await JsonSerializer.DeserializeAsync<JsonElement>(stream, JsonOptions, ct);
+            return Results.Json(payload);
+        });
+
+        group.MapPut("/odoo-stock", async (
+            HttpContext ctx,
+            AdminOdooStockUpsertRequest req,
+            IHttpClientFactory httpClientFactory,
+            CancellationToken ct) =>
+        {
+            if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (req.AvailableQty < 0) return Results.BadRequest(new { error = "availableQty must be >= 0" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = req.Seller.Trim().ToLowerInvariant();
+            string skuNorm = req.Sku.Trim().ToLowerInvariant();
+
+            var odooClient = httpClientFactory.CreateClient("odoo-admin");
+            var payload = new
+            {
+                chainId = req.ChainId,
+                seller = sellerNorm,
+                sku = skuNorm,
+                availableQty = req.AvailableQty
+            };
+
+            using var upsertReq = new HttpRequestMessage(HttpMethod.Put, "/admin/stock")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            upsertReq.Headers.Authorization = bearerHeader;
+
+            using var upsertResp = await odooClient.SendAsync(upsertReq, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!upsertResp.IsSuccessStatusCode)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var stream = await upsertResp.Content.ReadAsStreamAsync(ct);
+            var body = await JsonSerializer.DeserializeAsync<JsonElement>(stream, JsonOptions, ct);
+            return Results.Json(body);
+        });
+
         group.MapGet("/odoo-product-catalog", async (HttpContext ctx, long chainId, string seller, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
         {
             if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
