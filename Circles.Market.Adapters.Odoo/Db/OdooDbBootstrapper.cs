@@ -69,6 +69,20 @@ CREATE TABLE IF NOT EXISTS fulfillment_runs (
   completed_at      timestamptz NULL,
   PRIMARY KEY (chain_id, seller_address, payment_reference)
 );
+
+-- 4. optional local stock ledger (admin-managed)
+CREATE TABLE IF NOT EXISTS inventory_stock (
+  chain_id       bigint NOT NULL,
+  seller_address text NOT NULL,
+  sku            text NOT NULL,
+  available_qty  bigint NOT NULL CHECK (available_qty >= 0),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  updated_by     text NULL,
+  PRIMARY KEY (chain_id, seller_address, sku)
+);
+
+CREATE INDEX IF NOT EXISTS ix_inventory_stock_lookup
+  ON inventory_stock(chain_id, seller_address, sku);
 ";
             await cmd.ExecuteNonQueryAsync(ct);
             _log.LogInformation("Odoo schema created/verified successfully.");

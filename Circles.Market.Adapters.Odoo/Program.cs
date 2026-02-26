@@ -38,6 +38,10 @@ publicBuilder.Services.AddSingleton<IOdooFulfillmentRunStore>(sp =>
         connString,
         sp.GetRequiredService<ILogger<PostgresFulfillmentRunStore>>()));
 publicBuilder.Services.AddSingleton<IFulfillmentRunStore>(sp => sp.GetRequiredService<IOdooFulfillmentRunStore>());
+publicBuilder.Services.AddSingleton<IInventoryStockStore>(sp =>
+    new PostgresInventoryStockStore(
+        connString,
+        sp.GetRequiredService<ILogger<PostgresInventoryStockStore>>()));
 
 // Typed HttpClient for Odoo JSON-RPC.
 publicBuilder.Services.AddHttpClient<OdooClient>();
@@ -154,6 +158,7 @@ publicApp.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
         ITrustedCallerAuth auth,
         IOdooConnectionResolver odooResolver,
         IInventoryMappingResolver mapper,
+        IInventoryStockStore stockStore,
         IHttpClientFactory httpFactory,
         ILoggerFactory loggerFactory,
         CancellationToken ct) =>
@@ -174,6 +179,22 @@ publicApp.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
 
         var (odooError, odoo) = await ResolveOdoo(chainId, seller, odooResolver, httpFactory, loggerFactory, ct);
         if (odooError != null) return odooError;
+
+        var localAvailableQty = await stockStore.GetAvailableQtyAsync(chainId, seller, sku, ct);
+        if (localAvailableQty.HasValue)
+        {
+            long localValue = localAvailableQty.Value;
+            if (localValue < 0) localValue = 0;
+
+            var localPayload = new Dictionary<string, object?>
+            {
+                ["@type"] = "QuantitativeValue",
+                ["value"] = localValue,
+                ["unitCode"] = "C62"
+            };
+
+            return Results.Json(localPayload, (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd);
+        }
 
         OdooProductTemplateStockDto? stock;
         try
@@ -225,6 +246,7 @@ publicApp.MapGet("/availability/{chainId}/{seller}/{sku}", async (
         ITrustedCallerAuth auth,
         IOdooConnectionResolver odooResolver,
         IInventoryMappingResolver mapper,
+        IInventoryStockStore stockStore,
         IHttpClientFactory httpFactory,
         ILoggerFactory loggerFactory,
         CancellationToken ct) =>
@@ -245,6 +267,19 @@ publicApp.MapGet("/availability/{chainId}/{seller}/{sku}", async (
 
         var (odooError, odoo) = await ResolveOdoo(chainId, seller, odooResolver, httpFactory, loggerFactory, ct);
         if (odooError != null) return odooError;
+
+        var localAvailableQty = await stockStore.GetAvailableQtyAsync(chainId, seller, sku, ct);
+        if (localAvailableQty.HasValue)
+        {
+            string localAvailability = localAvailableQty.Value > 0
+                ? "https://schema.org/InStock"
+                : "https://schema.org/OutOfStock";
+
+            return Results.Json(
+                localAvailability,
+                (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd
+            );
+        }
 
         OdooProductTemplateStockDto? stock;
         try
@@ -292,6 +327,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         ITrustedCallerAuth auth,
         IOdooConnectionResolver odooResolver,
         IInventoryMappingResolver mapper,
+        IInventoryStockStore stockStore,
         IOdooFulfillmentRunStore runStore,
         IHostApplicationLifetime lifetime,
         IHttpClientFactory httpFactory,
@@ -479,6 +515,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
         // Build sale order lines: SKU -> mapping default_code -> product.product id
         var lines = new List<SaleOrderLineDto>();
+        var decrementedLocalStock = new List<(string Sku, long Quantity)>();
 
         foreach (var item in req.Items)
         {
@@ -487,6 +524,28 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
             int qty = (int)Math.Floor(item.Quantity);
             if (qty < 1) qty = 1;
+
+            var localAvailableQty = await stockStore.GetAvailableQtyAsync(chainId, sellerLower, item.Sku, odooCt);
+            if (localAvailableQty.HasValue)
+            {
+                bool decremented = await stockStore.TryDecrementAsync(chainId, sellerLower, item.Sku, qty, odooCt);
+                if (!decremented)
+                {
+                    foreach (var d in decrementedLocalStock)
+                    {
+                        await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Quantity, odooCt);
+                    }
+
+                    string msg = $"Insufficient local stock for sku={item.Sku}";
+                    await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, jobCt);
+                    return Results.Json(
+                        JsonLdResult("error", req.OrderId, req.PaymentReference, sellerLower, item.Sku, msg, new[] { "insufficientStock" }),
+                        (System.Text.Json.JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd,
+                        statusCode: 409);
+                }
+
+                decrementedLocalStock.Add((item.Sku, qty));
+            }
 
             int productVariantId = await odoo.ResolveProductVariantIdByCodeAsync(mapping.OdooProductCode, odooCt);
 
@@ -500,6 +559,11 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
         if (lines.Count == 0)
         {
+            foreach (var d in decrementedLocalStock)
+            {
+                await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Quantity, jobCt);
+            }
+
             await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, jobCt);
             return Results.Json(
                 JsonLdResult("notApplicable", req.OrderId, req.PaymentReference, sellerLower, null, "No items mapped to Odoo", Array.Empty<string>()),
@@ -537,6 +601,20 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         }
         catch (Exception ex)
         {
+            foreach (var d in decrementedLocalStock)
+            {
+                try
+                {
+                    await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Quantity, jobCt);
+                }
+                catch (Exception releaseEx)
+                {
+                    log.LogError(releaseEx,
+                        "Failed to compensate local stock decrement for seller={Seller} chain={Chain} sku={Sku} qty={Qty}",
+                        sellerLower, chainId, d.Sku, d.Quantity);
+                }
+            }
+
             log.LogError(ex, "Failed to create/confirm sale order for order {OrderId}", req.OrderId);
 
             string msg = ex.Message;

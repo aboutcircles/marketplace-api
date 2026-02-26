@@ -47,6 +47,15 @@ public sealed class InventoryMappingDto
     [JsonPropertyName("odooProductCode")] public string OdooProductCode { get; set; } = string.Empty;
     [JsonPropertyName("enabled")] public bool Enabled { get; set; }
     [JsonPropertyName("revokedAt")] public DateTimeOffset? RevokedAt { get; set; }
+    [JsonPropertyName("localAvailableQty")] public long? LocalAvailableQty { get; set; }
+}
+
+public sealed class InventoryStockUpsertRequest
+{
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
+    [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
+    [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
+    [JsonPropertyName("availableQty")] public long AvailableQty { get; set; }
 }
 
 public sealed class OdooProductVariantQueryResult

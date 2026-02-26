@@ -131,9 +131,13 @@ WHERE chain_id=$1 AND seller_address=$2";
             await using var conn = new NpgsqlConnection(postgresConn);
             await conn.OpenAsync(ct);
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"SELECT chain_id, seller_address, sku, odoo_product_code, enabled, revoked_at
-FROM inventory_mappings
-ORDER BY chain_id, seller_address, sku";
+            cmd.CommandText = @"SELECT m.chain_id, m.seller_address, m.sku, m.odoo_product_code, m.enabled, m.revoked_at, s.available_qty
+FROM inventory_mappings m
+LEFT JOIN inventory_stock s
+  ON s.chain_id = m.chain_id
+ AND s.seller_address = m.seller_address
+ AND s.sku = m.sku
+ORDER BY m.chain_id, m.seller_address, m.sku";
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -144,7 +148,8 @@ ORDER BY chain_id, seller_address, sku";
                     Sku = reader.GetString(2),
                     OdooProductCode = reader.GetString(3),
                     Enabled = reader.GetBoolean(4),
-                    RevokedAt = reader.IsDBNull(5) ? null : reader.GetFieldValue<DateTimeOffset?>(5)
+                    RevokedAt = reader.IsDBNull(5) ? null : reader.GetFieldValue<DateTimeOffset?>(5),
+                    LocalAvailableQty = reader.IsDBNull(6) ? null : reader.GetInt64(6)
                 });
             }
             return Results.Json(result);
@@ -183,7 +188,88 @@ ON CONFLICT (seller_address, chain_id, sku) DO UPDATE SET
                 Sku = sku,
                 OdooProductCode = code,
                 Enabled = req.Enabled,
-                RevokedAt = req.Enabled ? null : DateTimeOffset.UtcNow
+                RevokedAt = req.Enabled ? null : DateTimeOffset.UtcNow,
+                LocalAvailableQty = null
+            });
+        });
+
+        group.MapGet("/stock/{chainId:long}/{seller}/{sku}", async (
+            long chainId,
+            string seller,
+            string sku,
+            CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            await using var conn = new NpgsqlConnection(postgresConn);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"SELECT available_qty, updated_at, updated_by
+FROM inventory_stock
+WHERE chain_id=$1 AND seller_address=$2 AND sku=$3
+LIMIT 1";
+            cmd.Parameters.AddWithValue(chainId);
+            cmd.Parameters.AddWithValue(sellerNorm);
+            cmd.Parameters.AddWithValue(skuNorm);
+
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+            {
+                return Results.NotFound(new { error = "stock not configured" });
+            }
+
+            return Results.Json(new
+            {
+                chainId,
+                seller = sellerNorm,
+                sku = skuNorm,
+                availableQty = reader.GetInt64(0),
+                updatedAt = reader.GetFieldValue<DateTimeOffset>(1),
+                updatedBy = reader.IsDBNull(2) ? null : reader.GetString(2)
+            });
+        });
+
+        group.MapPut("/stock", async (HttpContext context, InventoryStockUpsertRequest req, CancellationToken ct) =>
+        {
+            if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (req.AvailableQty < 0) return Results.BadRequest(new { error = "availableQty must be >= 0" });
+
+            string seller = req.Seller.Trim().ToLowerInvariant();
+            string sku = req.Sku.Trim().ToLowerInvariant();
+            string? updatedBy = context.User.FindFirst("sub")?.Value
+                                ?? context.User.Identity?.Name;
+
+            await using var conn = new NpgsqlConnection(postgresConn);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"INSERT INTO inventory_stock(chain_id, seller_address, sku, available_qty, updated_at, updated_by)
+VALUES ($1, $2, $3, $4, now(), $5)
+ON CONFLICT (chain_id, seller_address, sku)
+DO UPDATE SET
+  available_qty = EXCLUDED.available_qty,
+  updated_at = now(),
+  updated_by = EXCLUDED.updated_by";
+            cmd.Parameters.AddWithValue(req.ChainId);
+            cmd.Parameters.AddWithValue(seller);
+            cmd.Parameters.AddWithValue(sku);
+            cmd.Parameters.AddWithValue(req.AvailableQty);
+            cmd.Parameters.AddWithValue((object?)updatedBy ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync(ct);
+
+            return Results.Json(new
+            {
+                chainId = req.ChainId,
+                seller,
+                sku,
+                availableQty = req.AvailableQty,
+                updatedBy
             });
         });
 
