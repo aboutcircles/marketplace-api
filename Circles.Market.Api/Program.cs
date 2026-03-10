@@ -58,7 +58,10 @@ publicBuilder.Logging.AddConsole();
 // Memory cache with a global size cap (200 MiB)
 publicBuilder.Services.AddMemoryCache(o => o.SizeLimit = 200 * 1024 * 1024);
 
-// Rate limiting: simple fixed-window per-IP
+// Rate limiting: fixed-window per-IP
+// Caddy allows 30/s per IP; this is the backend safety net.
+// Reads (catalog, orders) are cheap; writes (checkout, pin) are I/O-bound on IPFS.
+// 300/min = 5/s sustained — sufficient for catalog browsing, prevents abuse.
 publicBuilder.Services.AddRateLimiter(o =>
 {
     o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
@@ -66,7 +69,7 @@ publicBuilder.Services.AddRateLimiter(o =>
         string key = ctx.Connection.RemoteIpAddress?.ToString() ?? "anon";
         return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = 60,
+            PermitLimit = 300,
             Window = TimeSpan.FromMinutes(1),
             AutoReplenishment = true,
             QueueLimit = 0
