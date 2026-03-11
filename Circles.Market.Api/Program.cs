@@ -58,24 +58,32 @@ publicBuilder.Logging.AddConsole();
 // Memory cache with a global size cap (200 MiB)
 publicBuilder.Services.AddMemoryCache(o => o.SizeLimit = 200 * 1024 * 1024);
 
-// Rate limiting: fixed-window per-IP
-// Caddy allows 30/s per IP; this is the backend safety net.
-// Reads (catalog, orders) are cheap; writes (checkout, pin) are I/O-bound on IPFS.
-// 300/min = 5/s sustained — sufficient for catalog browsing, prevents abuse.
-publicBuilder.Services.AddRateLimiter(o =>
+// Rate limiting: fixed-window per-IP (configurable via env)
+// Env var names shared across all services (auth, invitation, market).
+// RATE_LIMIT_ENABLED        — "true" (default) or "false" to disable entirely
+// RATE_LIMIT_GLOBAL_LIMIT   — max requests per window per IP (default: 300)
+// RATE_LIMIT_GLOBAL_WINDOW_SECONDS — window duration in seconds (default: 60)
+bool rateLimitEnabled = !string.Equals(Environment.GetEnvironmentVariable("RATE_LIMIT_ENABLED"), "false", StringComparison.OrdinalIgnoreCase);
+int rateLimitPermits = int.TryParse(Environment.GetEnvironmentVariable("RATE_LIMIT_GLOBAL_LIMIT"), out var rl) && rl >= 0 ? rl : 300;
+int rateLimitWindowSec = int.TryParse(Environment.GetEnvironmentVariable("RATE_LIMIT_GLOBAL_WINDOW_SECONDS"), out var rw) && rw > 0 ? rw : 60;
+
+if (rateLimitEnabled)
 {
-    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    publicBuilder.Services.AddRateLimiter(o =>
     {
-        string key = ctx.Connection.RemoteIpAddress?.ToString() ?? "anon";
-        return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
+        o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
         {
-            PermitLimit = 300,
-            Window = TimeSpan.FromMinutes(1),
-            AutoReplenishment = true,
-            QueueLimit = 0
+            string key = ctx.Connection.RemoteIpAddress?.ToString() ?? "anon";
+            return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = rateLimitPermits,
+                Window = TimeSpan.FromSeconds(rateLimitWindowSec),
+                AutoReplenishment = true,
+                QueueLimit = 0
+            });
         });
     });
-});
+}
 
 var chainRpcUrl = Environment.GetEnvironmentVariable("RPC")
                   ?? throw new Exception("The RPC env variable is not set.");
@@ -268,6 +276,8 @@ publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "ASPNETCORE_UR
     Environment.GetEnvironmentVariable("ASPNETCORE_URLS") ?? "[unset]");
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "PORT",
     Environment.GetEnvironmentVariable("PORT") ?? "[unset]");
+publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "RATE_LIMIT",
+    !rateLimitEnabled ? "DISABLED" : $"{rateLimitPermits}/{rateLimitWindowSec}s");
 
 // Ensure market routes schema
 using (var scope = publicApp.Services.CreateScope())
@@ -300,7 +310,10 @@ publicApp.UseSwaggerUI(c =>
 });
 
 publicApp.UseCors("AllowAll");
-publicApp.UseRateLimiter();
+if (rateLimitEnabled)
+{
+    publicApp.UseRateLimiter();
+}
 publicApp.UseAuthentication();
 publicApp.UseAuthorization();
 publicApp.UseHttpMetrics();
