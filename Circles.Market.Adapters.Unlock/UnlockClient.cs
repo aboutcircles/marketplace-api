@@ -21,13 +21,15 @@ public sealed class UnlockMintOutcome
     public BigInteger? KeyId { get; init; }
     public long ExpirationUnix { get; init; }
     public JsonElement? Ticket { get; init; }
-    public string? Warning { get; init; }
+    public string? QrCodeDataUrl { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
     public string? Error { get; init; }
 }
 
 public interface IUnlockClient
 {
     Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, CancellationToken ct);
+    Task<string> GetTicketQrCodeDataUrlAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct);
 }
 
 public sealed class UnlockClient : IUnlockClient
@@ -155,19 +157,42 @@ public sealed class UnlockClient : IUnlockClient
             }
 
             JsonElement? ticket = null;
-            string? warning = null;
+            string? qrCodeDataUrl = null;
+            var warnings = new List<string>();
 
             try
             {
                 var ticketFetch = await TryFetchTicketWithRetryAsync(mapping, keyId.Value, ct);
                 ticket = ticketFetch.Ticket;
-                warning = ticketFetch.Warning;
+                if (!string.IsNullOrWhiteSpace(ticketFetch.Warning))
+                {
+                    warnings.Add(ticketFetch.Warning);
+                }
             }
             catch (Exception ex)
             {
-                warning = "locksmithFetchFailed";
+                warnings.Add("locksmithFetchFailed");
                 _log.LogWarning(ex,
                     "Locksmith fetch failed for chain={Chain} lock={Lock} keyId={KeyId}",
+                    mapping.ChainId,
+                    mapping.LockAddress,
+                    keyId.Value);
+            }
+
+            try
+            {
+                var qrFetch = await TryFetchTicketQrCodeWithRetryAsync(mapping, keyId.Value, ct);
+                qrCodeDataUrl = qrFetch.QrCodeDataUrl;
+                if (!string.IsNullOrWhiteSpace(qrFetch.Warning))
+                {
+                    warnings.Add(qrFetch.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add("locksmithQrCodeFetchFailed");
+                _log.LogWarning(ex,
+                    "Locksmith QR code fetch failed for chain={Chain} lock={Lock} keyId={KeyId}",
                     mapping.ChainId,
                     mapping.LockAddress,
                     keyId.Value);
@@ -180,7 +205,8 @@ public sealed class UnlockClient : IUnlockClient
                 TransactionHash = receipt.TransactionHash,
                 KeyId = keyId,
                 Ticket = ticket,
-                Warning = warning
+                QrCodeDataUrl = qrCodeDataUrl,
+                Warnings = warnings
             };
         }
         catch (RpcResponseException ex)
@@ -305,6 +331,46 @@ public sealed class UnlockClient : IUnlockClient
         return doc.RootElement.Clone();
     }
 
+    public async Task<string> GetTicketQrCodeDataUrlAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
+    {
+        return await FetchTicketQrCodeDataUrlAsync(mapping, keyId, ct);
+    }
+
+    private async Task<string> FetchTicketQrCodeDataUrlAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
+    {
+        var baseUrl = mapping.LocksmithBase.Trim().TrimEnd('/') + "/";
+        var relative = $"v2/api/ticket/{mapping.ChainId}/{mapping.LockAddress}/{keyId}/qr";
+
+        using var client = _httpClientFactory.CreateClient();
+        client.BaseAddress = new Uri(baseUrl);
+        if (!string.IsNullOrWhiteSpace(mapping.LocksmithToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", mapping.LocksmithToken.Trim());
+        }
+
+        using var response = await client.GetAsync(relative, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            throw new HttpRequestException(
+                $"Locksmith returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
+                inner: null,
+                statusCode: response.StatusCode);
+        }
+
+        var bytes = await response.Content.ReadAsByteArrayAsync(ct);
+        if (bytes.Length == 0)
+        {
+            throw new HttpRequestException(
+                "Locksmith returned an empty QR image payload",
+                inner: null,
+                statusCode: response.StatusCode);
+        }
+
+        var base64 = Convert.ToBase64String(bytes);
+        return "data:image/png;base64," + base64;
+    }
+
     private async Task<(JsonElement? Ticket, string? Warning)> TryFetchTicketWithRetryAsync(
         UnlockMappingEntry mapping,
         BigInteger keyId,
@@ -367,6 +433,75 @@ public sealed class UnlockClient : IUnlockClient
                     keyId,
                     attempt);
                 return (null, "locksmithTicketNotReady");
+            }
+
+            await Task.Delay(intervalMs, retryCt);
+        }
+    }
+
+    private async Task<(string? QrCodeDataUrl, string? Warning)> TryFetchTicketQrCodeWithRetryAsync(
+        UnlockMappingEntry mapping,
+        BigInteger keyId,
+        CancellationToken ct)
+    {
+        int timeoutMs = GetEnvInt("UNLOCK_LOCKSMITH_QR_FETCH_TIMEOUT_MS", 20000);
+        int intervalMs = Math.Max(200, GetEnvInt("UNLOCK_LOCKSMITH_QR_FETCH_INTERVAL_MS", 1000));
+
+        using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        retryCts.CancelAfter(TimeSpan.FromMilliseconds(timeoutMs));
+        var retryCt = retryCts.Token;
+
+        int attempt = 0;
+        while (true)
+        {
+            attempt++;
+            try
+            {
+                var qrCodeDataUrl = await FetchTicketQrCodeDataUrlAsync(mapping, keyId, retryCt);
+                if (attempt > 1)
+                {
+                    _log.LogInformation(
+                        "Locksmith QR code became available after retries. chain={Chain} lock={Lock} keyId={KeyId} attempts={Attempts}",
+                        mapping.ChainId,
+                        mapping.LockAddress,
+                        keyId,
+                        attempt);
+                }
+
+                return (qrCodeDataUrl, null);
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                if (retryCt.IsCancellationRequested)
+                {
+                    if (ct.IsCancellationRequested)
+                        ct.ThrowIfCancellationRequested();
+
+                    _log.LogInformation(
+                        "Locksmith QR code not yet available after retry window. chain={Chain} lock={Lock} keyId={KeyId} attempts={Attempts}",
+                        mapping.ChainId,
+                        mapping.LockAddress,
+                        keyId,
+                        attempt);
+                    return (null, "locksmithQrCodeNotReady");
+                }
+
+                _log.LogDebug(
+                    "Locksmith QR code still not found, will retry. chain={Chain} lock={Lock} keyId={KeyId} attempt={Attempt}",
+                    mapping.ChainId,
+                    mapping.LockAddress,
+                    keyId,
+                    attempt);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _log.LogInformation(
+                    "Locksmith QR code fetch timed out. chain={Chain} lock={Lock} keyId={KeyId} attempts={Attempts}",
+                    mapping.ChainId,
+                    mapping.LockAddress,
+                    keyId,
+                    attempt);
+                return (null, "locksmithQrCodeNotReady");
             }
 
             await Task.Delay(intervalMs, retryCt);

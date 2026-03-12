@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Numerics;
 using Circles.Market.Adapters.Unlock;
 using Circles.Market.Adapters.Unlock.Admin;
 using Circles.Market.Adapters.Unlock.Auth;
@@ -300,7 +301,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         KeyId = mint.KeyId?.ToString(),
         ExpirationUnix = mint.ExpirationUnix,
         Status = mint.Success ? "ok" : "error",
-        Warning = mint.Warning,
+        Warning = mint.Warnings.Count == 0 ? null : string.Join(",", mint.Warnings),
         Error = mint.Error,
         ResponseJson = payloadJson
     }, ct);
@@ -313,6 +314,104 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
     await runStore.MarkOkAsync(chainId, sellerNorm, req.PaymentReference, ct);
     return Results.Json(payloadObj, (JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd);
+});
+
+publicApp.MapGet("/tickets/{chainId:long}/{seller}/{paymentReference}/qrcode", async (
+    long chainId,
+    string seller,
+    string paymentReference,
+    HttpRequest request,
+    ITrustedCallerAuth auth,
+    IUnlockMintStore mintStore,
+    IUnlockMappingResolver mappings,
+    IUnlockClient unlockClient,
+    CancellationToken ct) =>
+{
+    if (!IsValidAddress(seller))
+    {
+        return Results.BadRequest(new { error = "Invalid seller address" });
+    }
+
+    if (string.IsNullOrWhiteSpace(paymentReference))
+    {
+        return Results.BadRequest(new { error = "paymentReference is required" });
+    }
+
+    string? apiKey = request.Headers["X-Circles-Service-Key"].FirstOrDefault();
+    var authRes = await auth.AuthorizeAsync(apiKey, "ticket", chainId, seller, ct);
+    if (!authRes.Allowed)
+    {
+        return Results.Unauthorized();
+    }
+
+    var sellerNorm = seller.Trim().ToLowerInvariant();
+    var paymentRefNorm = paymentReference.Trim();
+    var existing = await mintStore.GetByPaymentReferenceAsync(chainId, sellerNorm, paymentRefNorm, ct);
+    if (existing is null)
+    {
+        return Results.NotFound(new { error = "Mint record not found" });
+    }
+
+    var persistedQrCode = TryGetQrCode(existing.ResponseJson);
+    if (!string.IsNullOrWhiteSpace(persistedQrCode))
+    {
+        return Results.Json(new { qrcode = persistedQrCode });
+    }
+
+    if (string.IsNullOrWhiteSpace(existing.KeyId))
+    {
+        return Results.UnprocessableEntity(new { error = "Mint record does not include keyId" });
+    }
+
+    if (!BigInteger.TryParse(existing.KeyId, out var keyId))
+    {
+        return Results.UnprocessableEntity(new { error = "Stored keyId is invalid" });
+    }
+
+    if (string.IsNullOrWhiteSpace(existing.Sku))
+    {
+        return Results.UnprocessableEntity(new { error = "Mint record does not include sku" });
+    }
+
+    var (mapped, mapping) = await mappings.TryResolveAsync(chainId, sellerNorm, existing.Sku, ct);
+    if (!mapped || mapping is null)
+    {
+        return Results.NotFound(new { error = "No mapping for seller/sku", chainId, seller = sellerNorm, sku = existing.Sku });
+    }
+
+    string qrcode;
+    try
+    {
+        qrcode = await unlockClient.GetTicketQrCodeDataUrlAsync(mapping, keyId, ct);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            detail: $"Failed to fetch QR code from Locksmith: {ex.Message}",
+            statusCode: StatusCodes.Status502BadGateway,
+            title: "QR fetch failed");
+    }
+
+    var patchedResponseJson = UpsertQrCodeIntoResponseJson(existing.ResponseJson, qrcode);
+    await mintStore.UpsertMintAsync(new UnlockMintRecord
+    {
+        ChainId = existing.ChainId,
+        SellerAddress = existing.SellerAddress,
+        PaymentReference = existing.PaymentReference,
+        OrderId = existing.OrderId,
+        Sku = existing.Sku,
+        BuyerAddress = existing.BuyerAddress,
+        LockAddress = existing.LockAddress,
+        TransactionHash = existing.TransactionHash,
+        KeyId = existing.KeyId,
+        ExpirationUnix = existing.ExpirationUnix,
+        Status = existing.Status,
+        Warning = existing.Warning,
+        Error = existing.Error,
+        ResponseJson = patchedResponseJson
+    }, ct);
+
+    return Results.Json(new { qrcode });
 });
 
 publicApp.MapMetrics();
@@ -355,10 +454,9 @@ static object BuildReplayPayload(FulfillmentRequest req, string seller, UnlockMi
         keyId = existing?.KeyId,
         expirationUnix = existing?.ExpirationUnix,
         message,
-        warnings = string.IsNullOrWhiteSpace(existing?.Warning)
-            ? Array.Empty<string>()
-            : new[] { (string)existing!.Warning! },
-        ticket = TryGetTicket(existing?.ResponseJson)
+        warnings = TryGetWarnings(existing?.ResponseJson, existing?.Warning),
+        ticket = TryGetTicket(existing?.ResponseJson),
+        qrcode = TryGetQrCode(existing?.ResponseJson)
     };
 }
 
@@ -384,12 +482,40 @@ static object BuildSuccessOrErrorPayload(
         transactionHash = mint.TransactionHash,
         keyId = mint.KeyId?.ToString(),
         expirationUnix = mint.ExpirationUnix,
-        warnings = string.IsNullOrWhiteSpace(mint.Warning)
-            ? Array.Empty<string>()
-            : new[] { (string)mint.Warning! },
+        warnings = mint.Warnings,
         message = mint.Success ? "Unlock ticket minted" : mint.Error,
-        ticket = mint.Ticket
+        ticket = mint.Ticket,
+        qrcode = mint.QrCodeDataUrl
     };
+}
+
+static string[] TryGetWarnings(string? responseJson, string? fallbackWarning)
+{
+    if (!string.IsNullOrWhiteSpace(responseJson))
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(responseJson);
+            if (doc.RootElement.TryGetProperty("warnings", out var warnings) && warnings.ValueKind == JsonValueKind.Array)
+            {
+                return warnings
+                    .EnumerateArray()
+                    .Where(x => x.ValueKind == JsonValueKind.String)
+                    .Select(x => x.GetString())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!)
+                    .ToArray();
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    return string.IsNullOrWhiteSpace(fallbackWarning)
+        ? Array.Empty<string>()
+        : fallbackWarning
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }
 
 static JsonElement? TryGetTicket(string? responseJson)
@@ -408,4 +534,73 @@ static JsonElement? TryGetTicket(string? responseJson)
     }
 
     return null;
+}
+
+static string? TryGetQrCode(string? responseJson)
+{
+    if (string.IsNullOrWhiteSpace(responseJson)) return null;
+    try
+    {
+        using var doc = JsonDocument.Parse(responseJson);
+        if (doc.RootElement.TryGetProperty("qrcode", out var qrCode) && qrCode.ValueKind == JsonValueKind.String)
+        {
+            var value = qrCode.GetString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+    }
+    catch
+    {
+    }
+
+    return null;
+}
+
+static string UpsertQrCodeIntoResponseJson(string? responseJson, string qrcodeDataUrl)
+{
+    if (string.IsNullOrWhiteSpace(responseJson))
+    {
+        return JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["qrcode"] = qrcodeDataUrl
+        });
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(responseJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["qrcode"] = qrcodeDataUrl
+            });
+        }
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (string.Equals(prop.Name, "qrcode", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                prop.WriteTo(writer);
+            }
+
+            writer.WriteString("qrcode", qrcodeDataUrl);
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+    }
+    catch
+    {
+        return JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["qrcode"] = qrcodeDataUrl
+        });
+    }
 }
