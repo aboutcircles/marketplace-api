@@ -204,7 +204,9 @@ public static class OutboundGuards
 
     public static int GetAvailabilityTimeoutMs() => GetEnvInt("OUTBOUND_AVAILABILITY_TIMEOUT_MS", 800);
     public static int GetInventoryTimeoutMs() => GetEnvInt("OUTBOUND_INVENTORY_TIMEOUT_MS", 800);
-    public static int GetFulfillmentTimeoutMs() => GetEnvInt("OUTBOUND_FULFILLMENT_TIMEOUT_MS", 1500);
+    // Fulfillment may include on-chain transactions (e.g. Unlock grantKeys) and receipt polling,
+    // which can take multiple seconds even when successful.
+    public static int GetFulfillmentTimeoutMs() => GetEnvInt("OUTBOUND_FULFILLMENT_TIMEOUT_MS", 30000);
     public static int GetMaxResponseBytes() => GetEnvInt("OUTBOUND_MAX_RESPONSE_BYTES", 65536);
     public static int GetMaxRedirects() => GetEnvInt("OUTBOUND_MAX_REDIRECTS", 3);
 

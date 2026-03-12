@@ -80,7 +80,7 @@ public sealed class HttpOrderFulfillmentClient : IOrderFulfillmentClient
         {
             orderId,
             paymentReference,
-            buyer = order.Customer?.Id,
+            buyer = ExtractBuyerAddress(order.Customer?.Id),
             customer = BuildCustomerPayload(order.Customer),
             shippingAddress = BuildAddressPayload(order.ShippingAddress),
             billingAddress = BuildAddressPayload(order.BillingAddress),
@@ -199,5 +199,30 @@ public sealed class HttpOrderFulfillmentClient : IOrderFulfillmentClient
         }
         catch { }
         return (null, 0);
+    }
+
+    private static string? ExtractBuyerAddress(string? customerId)
+    {
+        if (string.IsNullOrWhiteSpace(customerId))
+        {
+            return null;
+        }
+
+        var trimmed = customerId.Trim();
+
+        // Common shape in order snapshots: eip155:{chainId}:{address}
+        var parts = trimmed.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 3 && string.Equals(parts[0], "eip155", StringComparison.OrdinalIgnoreCase))
+        {
+            var addr = parts[2];
+            return addr.StartsWith("0x", StringComparison.OrdinalIgnoreCase) && addr.Length == 42
+                ? addr.ToLowerInvariant()
+                : null;
+        }
+
+        // Also accept direct EVM address format.
+        return trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase) && trimmed.Length == 42
+            ? trimmed.ToLowerInvariant()
+            : null;
     }
 }

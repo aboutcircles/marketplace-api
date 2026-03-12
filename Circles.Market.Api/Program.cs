@@ -133,6 +133,23 @@ publicBuilder.Services.AddSingleton<IOrderAccessService, OrderAccessService>();
 publicBuilder.Services.AddSingleton<IPaymentStore>(sp =>
     new PostgresPaymentStore(pgConn!, sp.GetRequiredService<ILogger<PostgresPaymentStore>>()));
 
+bool orderTraceEnabled = string.Equals(
+    Environment.GetEnvironmentVariable("ORDER_TRACE_ENABLED"),
+    "true",
+    StringComparison.OrdinalIgnoreCase);
+if (orderTraceEnabled)
+{
+    publicBuilder.Services.AddSingleton<AsyncBufferedOrderProcessingTraceSink>();
+    publicBuilder.Services.AddSingleton<IOrderProcessingTraceSink>(sp =>
+        sp.GetRequiredService<AsyncBufferedOrderProcessingTraceSink>());
+    publicBuilder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<AsyncBufferedOrderProcessingTraceSink>());
+}
+else
+{
+    publicBuilder.Services.AddSingleton<IOrderProcessingTraceSink, NoopOrderProcessingTraceSink>();
+}
+
 // Order payment flow: single owner of payment→order lifecycle
 // SSE bus + hooks that publish status changes to subscribers
 publicBuilder.Services.AddSingleton<IOrderStatusEventBus, InMemoryOrderStatusEventBus>();
@@ -142,6 +159,7 @@ publicBuilder.Services.AddSingleton<IOrderLifecycleHooks>(sp =>
         sp.GetRequiredService<IOrderStore>(),
         sp.GetRequiredService<IOrderFulfillmentClient>(),
         sp.GetRequiredService<IMarketRouteStore>(),
+        sp.GetRequiredService<IOrderProcessingTraceSink>(),
         sp.GetRequiredService<ILogger<SseOrderLifecycleHooks>>()));
 publicBuilder.Services.AddSingleton<IOrderPaymentFlow, OrderPaymentFlow>();
 
@@ -268,6 +286,7 @@ publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "RPC", SafeUrl
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "PINNING_SERVICE_URL", SafeUrl(pinningServiceUrl));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "POSTGRES_CONNECTION", SafeConnectionString(pgConn!));
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "DB_AUTO_MIGRATE", autoMigrate);
+publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "ORDER_TRACE_ENABLED", orderTraceEnabled);
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "AUTH_SERVICE_URL",
     Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "[MISSING]");
 publicApp.Logger.LogInformation("[startup-config] {Key}={Value}", "CATALOG_AVATAR_PROFILE_TIMEOUT_MS",
@@ -387,6 +406,8 @@ string odooAdminUrl = Environment.GetEnvironmentVariable("ODOO_ADMIN_INTERNAL_UR
                        ?? throw new Exception("ODOO_ADMIN_INTERNAL_URL env variable is required for admin proxy.");
 string codeDispAdminUrl = Environment.GetEnvironmentVariable("CODEDISP_ADMIN_INTERNAL_URL")
                            ?? throw new Exception("CODEDISP_ADMIN_INTERNAL_URL env variable is required for admin proxy.");
+string unlockAdminUrl = Environment.GetEnvironmentVariable("UNLOCK_ADMIN_INTERNAL_URL")
+                        ?? throw new Exception("UNLOCK_ADMIN_INTERNAL_URL env variable is required for admin proxy.");
 string adminProxyHostsRaw = Environment.GetEnvironmentVariable("ADMIN_PROXY_ALLOWED_HOSTS")
                             ?? throw new Exception("ADMIN_PROXY_ALLOWED_HOSTS env variable is required for admin proxy.");
 var adminProxyHosts = new HashSet<string>(adminProxyHostsRaw
@@ -406,6 +427,7 @@ static Uri RequireSafeAdminUri(string raw, HashSet<string> allowedHosts)
 
 var odooAdminUri = RequireSafeAdminUri(odooAdminUrl, adminProxyHosts);
 var codeDispAdminUri = RequireSafeAdminUri(codeDispAdminUrl, adminProxyHosts);
+var unlockAdminUri = RequireSafeAdminUri(unlockAdminUrl, adminProxyHosts);
 
 adminBuilder.Services.AddHttpClient("odoo-admin", client =>
 {
@@ -419,6 +441,15 @@ adminBuilder.Services.AddHttpClient("odoo-admin", client =>
 adminBuilder.Services.AddHttpClient("codedisp-admin", client =>
 {
     client.BaseAddress = codeDispAdminUri;
+    client.Timeout = TimeSpan.FromSeconds(10);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    AllowAutoRedirect = false
+});
+
+adminBuilder.Services.AddHttpClient("unlock-admin", client =>
+{
+    client.BaseAddress = unlockAdminUri;
     client.Timeout = TimeSpan.FromSeconds(10);
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {

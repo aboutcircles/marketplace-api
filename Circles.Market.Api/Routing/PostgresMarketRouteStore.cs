@@ -92,6 +92,13 @@ VALUES
     NULL,
     'http://market-adapter-codedispenser:{MARKET_CODE_DISPENSER_PORT}/fulfill/{chain_id}/{seller}',
     true
+  ),
+  (
+    'unlock',
+    'http://market-adapter-unlock:{MARKET_UNLOCK_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku}',
+    NULL,
+    'http://market-adapter-unlock:{MARKET_UNLOCK_ADAPTER_PORT}/fulfill/{chain_id}/{seller}',
+    true
   )
 ON CONFLICT (offer_type) DO NOTHING;
 ";

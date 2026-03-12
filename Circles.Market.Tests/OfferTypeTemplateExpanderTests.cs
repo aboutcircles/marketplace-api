@@ -9,6 +9,7 @@ public class OfferTypeTemplateExpanderTests
     public void TryExpand_Replaces_Variables_CaseInsensitive()
     {
         Environment.SetEnvironmentVariable("MARKET_ODOO_ADAPTER_PORT", "65002");
+        Environment.SetEnvironmentVariable("MARKET_UNLOCK_ADAPTER_PORT", "65008");
 
         var ok = OfferTypeTemplateExpander.TryExpand(
             "http://market-adapter-odoo:{market_odoo_adapter_port}/inventory/{CHAIN_ID}/{SeLlEr}/{sKu}",
@@ -20,6 +21,17 @@ public class OfferTypeTemplateExpanderTests
 
         Assert.That(ok, Is.True, err);
         Assert.That(expanded, Is.EqualTo("http://market-adapter-odoo:65002/inventory/100/0xfb406c131101f94182ce69ddd8eb139e172c96dd/bp1523909"));
+
+        var unlockOk = OfferTypeTemplateExpander.TryExpand(
+            "http://market-adapter-unlock:{MARKET_UNLOCK_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku}",
+            100,
+            "0xFB406c131101F94182CE69dDd8EB139E172c96Dd",
+            "BP1523909",
+            out var unlockExpanded,
+            out var unlockErr);
+
+        Assert.That(unlockOk, Is.True, unlockErr);
+        Assert.That(unlockExpanded, Is.EqualTo("http://market-adapter-unlock:65008/inventory/100/0xfb406c131101f94182ce69ddd8eb139e172c96dd/bp1523909"));
     }
 
     [Test]

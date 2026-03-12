@@ -10,6 +10,7 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
     private readonly IOrderStore _orders;
     private readonly IOrderFulfillmentClient _fulfillment;
     private readonly IMarketRouteStore _routes;
+    private readonly IOrderProcessingTraceSink _trace;
     private readonly ILogger<SseOrderLifecycleHooks> _log;
 
     public SseOrderLifecycleHooks(
@@ -17,12 +18,14 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
         IOrderStore orders,
         IOrderFulfillmentClient fulfillment,
         IMarketRouteStore routes,
+        IOrderProcessingTraceSink trace,
         ILogger<SseOrderLifecycleHooks> log)
     {
         _bus = bus ?? throw new ArgumentNullException(nameof(bus));
         _orders = orders ?? throw new ArgumentNullException(nameof(orders));
         _fulfillment = fulfillment ?? throw new ArgumentNullException(nameof(fulfillment));
         _routes = routes ?? throw new ArgumentNullException(nameof(routes));
+        _trace = trace ?? throw new ArgumentNullException(nameof(trace));
         _log = log ?? throw new ArgumentNullException(nameof(log));
     }
 
@@ -31,11 +34,17 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
 
     public async Task OnConfirmedAsync(string paymentReference, DateTimeOffset confirmedAt, CancellationToken ct = default)
     {
+        _trace.Emit(new OrderProcessingTraceEvent(
+            DateTimeOffset.UtcNow, "hook_confirmed", "info", null, paymentReference, null, null, null, null,
+            "Running fulfillment for confirmed trigger", null));
         await RunFulfillmentAsync(paymentReference, trigger: "confirmed", confirmedAt, ct);
     }
 
     public async Task OnFinalizedAsync(string paymentReference, DateTimeOffset finalizedAt, CancellationToken ct = default)
     {
+        _trace.Emit(new OrderProcessingTraceEvent(
+            DateTimeOffset.UtcNow, "hook_finalized", "info", null, paymentReference, null, null, null, null,
+            "Running fulfillment for finalized trigger", null));
         await RunFulfillmentAsync(paymentReference, trigger: "finalized", finalizedAt, ct);
     }
 
@@ -125,12 +134,18 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
                     string? sellerId = offer.Seller?.Id;
                     if (!TryParseEip155SellerId(sellerId, out long sellerChain, out string sellerAddr))
                     {
+                        _trace.Emit(new OrderProcessingTraceEvent(
+                            DateTimeOffset.UtcNow, "fulfillment_skipped", "warn", orderId, payRef, null, null, null,
+                            "seller_id_parse_failed", "Could not parse seller id from offer", null));
                         continue;
                     }
 
                     string? sku = item.OrderedItem?.Sku;
                     if (string.IsNullOrWhiteSpace(sku))
                     {
+                        _trace.Emit(new OrderProcessingTraceEvent(
+                            DateTimeOffset.UtcNow, "fulfillment_skipped", "warn", orderId, payRef, sellerChain, sellerAddr, null,
+                            "missing_sku", "Missing SKU in ordered item", null));
                         continue;
                     }
 
@@ -147,6 +162,9 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
                     {
                         _log.LogWarning("Fulfillment skipped: no configured endpoint for chain={Chain} seller={Seller} sku={Sku}",
                             sellerChain, sellerAddr, skuNorm);
+                        _trace.Emit(new OrderProcessingTraceEvent(
+                            DateTimeOffset.UtcNow, "fulfillment_skipped", "warn", orderId, payRef, sellerChain, sellerAddr, null,
+                            "route_not_found", "No fulfillment endpoint configured", null));
                         continue;
                     }
 
@@ -156,17 +174,29 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
 
                     if (!string.Equals(effectiveTrigger, trigger, StringComparison.OrdinalIgnoreCase))
                     {
+                        _trace.Emit(new OrderProcessingTraceEvent(
+                            DateTimeOffset.UtcNow, "fulfillment_skipped", "info", orderId, payRef, sellerChain, sellerAddr, null,
+                            "trigger_mismatch", $"Offer trigger '{effectiveTrigger}' does not match '{trigger}'", null));
                         continue;
                     }
 
                     try
                     {
+                        _trace.Emit(new OrderProcessingTraceEvent(
+                            DateTimeOffset.UtcNow, "fulfillment_call", "info", orderId, payRef, sellerChain, sellerAddr, null,
+                            null, "Invoking fulfillment endpoint", null));
                         var payload = await _fulfillment.FulfillAsync(endpoint!, orderId, payRef, snapshot, trigger, ct);
                         _orders.AddOutboxItem(orderId, "fulfillment", payload);
+                        _trace.Emit(new OrderProcessingTraceEvent(
+                            DateTimeOffset.UtcNow, "fulfillment_succeeded", "info", orderId, payRef, sellerChain, sellerAddr, null,
+                            null, "Fulfillment completed and outbox item stored", null));
                     }
                     catch (Exception ex)
                     {
                         _log.LogError(ex, "Fulfillment failed for order {OrderId} endpoint={Endpoint}", orderId, endpoint);
+                        _trace.Emit(new OrderProcessingTraceEvent(
+                            DateTimeOffset.UtcNow, "fulfillment_failed", "error", orderId, payRef, sellerChain, sellerAddr, null,
+                            "fulfillment_exception", ex.Message, null));
                     }
                 }
             }
@@ -174,6 +204,9 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
         catch (Exception ex)
         {
             _log.LogError(ex, "RunFulfillmentAsync failed for ref={Ref} trigger={Trigger}", paymentReference, trigger);
+            _trace.Emit(new OrderProcessingTraceEvent(
+                DateTimeOffset.UtcNow, "fulfillment_loop_failed", "error", null, paymentReference, null, null, null,
+                "loop_exception", ex.Message, null));
         }
     }
 

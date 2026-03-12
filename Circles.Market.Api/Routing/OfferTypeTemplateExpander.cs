@@ -34,6 +34,7 @@ public static class OfferTypeTemplateExpander
         int marketApiPort = GetPortEnv("MARKET_API_PORT", 5084);
         int odooPort = GetPortEnv("MARKET_ODOO_ADAPTER_PORT", 5678);
         int codedispPort = GetPortEnv("MARKET_CODE_DISPENSER_PORT", 5680);
+        int unlockPort = GetPortEnv("MARKET_UNLOCK_ADAPTER_PORT", 5682);
 
         var vars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -43,6 +44,7 @@ public static class OfferTypeTemplateExpander
             ["MARKET_API_PORT"] = marketApiPort.ToString(),
             ["MARKET_ODOO_ADAPTER_PORT"] = odooPort.ToString(),
             ["MARKET_CODE_DISPENSER_PORT"] = codedispPort.ToString(),
+            ["MARKET_UNLOCK_ADAPTER_PORT"] = unlockPort.ToString(),
         };
 
         string? localError = null;
