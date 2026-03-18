@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Net;
 using System.Numerics;
 using System.Text;
@@ -8,6 +9,7 @@ using Nethereum.Contracts;
 using Nethereum.Contracts.CQS;
 using Nethereum.JsonRpc.Client;
 using Nethereum.RPC.Eth.DTOs;
+using Nethereum.Signer;
 using Nethereum.Util;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
@@ -306,28 +308,18 @@ public sealed class UnlockClient : IUnlockClient
 
     private async Task<JsonElement?> FetchTicketAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
     {
-        var baseUrl = mapping.LocksmithBase.Trim().TrimEnd('/') + "/";
         var relative = $"v2/api/ticket/{mapping.ChainId}/lock/{mapping.LockAddress}/key/{keyId}";
 
-        using var client = _httpClientFactory.CreateClient();
-        client.BaseAddress = new Uri(baseUrl);
-        if (!string.IsNullOrWhiteSpace(mapping.LocksmithToken))
-        {
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", mapping.LocksmithToken.Trim());
-        }
-
-        using var response = await client.GetAsync(relative, ct);
-        var body = await response.Content.ReadAsStringAsync(ct);
-
-        if (!response.IsSuccessStatusCode)
+        var result = await GetLocksmithAsync(mapping, relative, ct);
+        if (!result.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
-                $"Locksmith returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
+                $"Locksmith returned {(int)result.StatusCode} {result.ReasonPhrase}: {result.BodyText}",
                 inner: null,
-                statusCode: response.StatusCode);
+                statusCode: result.StatusCode);
         }
 
-        using var doc = JsonDocument.Parse(body);
+        using var doc = JsonDocument.Parse(result.BodyText);
         return doc.RootElement.Clone();
     }
 
@@ -338,37 +330,247 @@ public sealed class UnlockClient : IUnlockClient
 
     private async Task<string> FetchTicketQrCodeDataUrlAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
     {
-        var baseUrl = mapping.LocksmithBase.Trim().TrimEnd('/') + "/";
         var relative = $"v2/api/ticket/{mapping.ChainId}/{mapping.LockAddress}/{keyId}/qr";
+        var result = await GetLocksmithAsync(mapping, relative, ct);
 
-        using var client = _httpClientFactory.CreateClient();
-        client.BaseAddress = new Uri(baseUrl);
-        if (!string.IsNullOrWhiteSpace(mapping.LocksmithToken))
+        if (!result.IsSuccessStatusCode)
         {
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", mapping.LocksmithToken.Trim());
-        }
-
-        using var response = await client.GetAsync(relative, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var body = await response.Content.ReadAsStringAsync(ct);
             throw new HttpRequestException(
-                $"Locksmith returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
+                $"Locksmith returned {(int)result.StatusCode} {result.ReasonPhrase}: {result.BodyText}",
                 inner: null,
-                statusCode: response.StatusCode);
+                statusCode: result.StatusCode);
         }
 
-        var bytes = await response.Content.ReadAsByteArrayAsync(ct);
-        if (bytes.Length == 0)
+        if (result.BodyBytes.Length == 0)
         {
             throw new HttpRequestException(
                 "Locksmith returned an empty QR image payload",
                 inner: null,
+                statusCode: result.StatusCode);
+        }
+
+        var base64 = Convert.ToBase64String(result.BodyBytes);
+        return "data:image/png;base64," + base64;
+    }
+
+    private async Task GenerateTicketAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
+    {
+        var relative = $"v2/api/ticket/{mapping.ChainId}/lock/{mapping.LockAddress}/key/{keyId}/generate";
+
+        var result = await GetLocksmithAsync(mapping, relative, ct);
+        if (!result.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Locksmith generate returned {(int)result.StatusCode} {result.ReasonPhrase}: {result.BodyText}",
+                inner: null,
+                statusCode: result.StatusCode);
+        }
+    }
+
+    private async Task<LocksmithHttpResult> GetLocksmithAsync(
+        UnlockMappingEntry mapping,
+        string relative,
+        CancellationToken ct)
+    {
+        var firstAttempt = await GetLocksmithCoreAsync(mapping, relative, preferConfiguredToken: true, ct);
+
+        bool shouldRetryWithSiwe =
+            (firstAttempt.StatusCode == HttpStatusCode.Unauthorized || firstAttempt.StatusCode == HttpStatusCode.Forbidden)
+            && CanLoginToLocksmith(mapping);
+
+        if (!shouldRetryWithSiwe)
+        {
+            return firstAttempt;
+        }
+
+        _log.LogInformation(
+            "Locksmith request was rejected, retrying with SIWE login. chain={Chain} lock={Lock} path={Path}",
+            mapping.ChainId,
+            mapping.LockAddress,
+            relative);
+
+        return await GetLocksmithCoreAsync(mapping, relative, preferConfiguredToken: false, ct);
+    }
+
+    private async Task<LocksmithHttpResult> GetLocksmithCoreAsync(
+        UnlockMappingEntry mapping,
+        string relative,
+        bool preferConfiguredToken,
+        CancellationToken ct)
+    {
+        using var client = _httpClientFactory.CreateClient();
+        client.BaseAddress = new Uri(mapping.LocksmithBase.Trim().TrimEnd('/') + "/");
+
+        var bearerToken = await ResolveLocksmithBearerTokenAsync(mapping, preferConfiguredToken, ct);
+        if (!string.IsNullOrWhiteSpace(bearerToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+        }
+
+        using var response = await client.GetAsync(relative, ct);
+        var bodyBytes = await response.Content.ReadAsByteArrayAsync(ct);
+        var bodyText = TryDecodeBody(bodyBytes);
+
+        return new LocksmithHttpResult
+        {
+            StatusCode = response.StatusCode,
+            ReasonPhrase = response.ReasonPhrase,
+            BodyBytes = bodyBytes,
+            BodyText = bodyText
+        };
+    }
+
+    private async Task<string?> ResolveLocksmithBearerTokenAsync(
+        UnlockMappingEntry mapping,
+        bool preferConfiguredToken,
+        CancellationToken ct)
+    {
+        bool hasConfiguredToken = !string.IsNullOrWhiteSpace(mapping.LocksmithToken);
+        if (preferConfiguredToken && hasConfiguredToken)
+        {
+            return mapping.LocksmithToken!.Trim();
+        }
+
+        if (CanLoginToLocksmith(mapping))
+        {
+            return await LoginToLocksmithAsync(mapping, ct);
+        }
+
+        if (!preferConfiguredToken && hasConfiguredToken)
+        {
+            return mapping.LocksmithToken!.Trim();
+        }
+
+        return null;
+    }
+
+    private static bool CanLoginToLocksmith(UnlockMappingEntry mapping)
+    {
+        return !string.IsNullOrWhiteSpace(mapping.ServicePrivateKey);
+    }
+
+    private async Task<string> LoginToLocksmithAsync(UnlockMappingEntry mapping, CancellationToken ct)
+    {
+        using var client = _httpClientFactory.CreateClient();
+        var baseUri = new Uri(mapping.LocksmithBase.Trim().TrimEnd('/') + "/");
+        client.BaseAddress = baseUri;
+
+        var servicePrivateKey = mapping.ServicePrivateKey.Trim();
+        var account = new Account(servicePrivateKey, mapping.ChainId);
+        var nonce = await GetLocksmithNonceAsync(client, ct);
+        var message = BuildSiweMessage(baseUri, account.Address, nonce);
+        var signature = SignSiweMessage(servicePrivateKey, message);
+
+        using var response = await client.PostAsJsonAsync("v2/auth/login", new LocksmithLoginRequest
+        {
+            Message = message,
+            Signature = signature
+        }, ct);
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Locksmith login returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
+                inner: null,
                 statusCode: response.StatusCode);
         }
 
-        var base64 = Convert.ToBase64String(bytes);
-        return "data:image/png;base64," + base64;
+        var login = JsonSerializer.Deserialize<LocksmithLoginResponse>(body, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        if (login is null || string.IsNullOrWhiteSpace(login.AccessToken))
+        {
+            throw new InvalidOperationException("Locksmith login succeeded but did not return an access token.");
+        }
+
+        return login.AccessToken.Trim();
+    }
+
+    private static async Task<string> GetLocksmithNonceAsync(HttpClient client, CancellationToken ct)
+    {
+        using var response = await client.GetAsync("v2/auth/nonce", ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Locksmith nonce returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}",
+                inner: null,
+                statusCode: response.StatusCode);
+        }
+
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            throw new InvalidOperationException("Locksmith nonce response was empty.");
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+
+            if (doc.RootElement.ValueKind == JsonValueKind.String)
+            {
+                var value = doc.RootElement.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value.Trim();
+                }
+            }
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("nonce", out var nonceProp) &&
+                nonceProp.ValueKind == JsonValueKind.String)
+            {
+                var value = nonceProp.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value.Trim();
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // fallback below
+        }
+
+        return body.Trim().Trim('"');
+    }
+
+    private static string BuildSiweMessage(Uri locksmithBaseUri, string address, string nonce)
+    {
+        var domain = locksmithBaseUri.Host;
+        var uri = locksmithBaseUri.GetLeftPart(UriPartial.Authority);
+        var issuedAt = DateTimeOffset.UtcNow.ToString("O");
+
+        return
+            $"{domain} wants you to sign in with your Ethereum account:\n" +
+            $"{address}\n\n" +
+            "Sign in with Ethereum to Unlock Protocol.\n\n" +
+            $"URI: {uri}\n" +
+            "Version: 1\n" +
+            "Chain ID: 1\n" +
+            $"Nonce: {nonce}\n" +
+            $"Issued At: {issuedAt}";
+    }
+
+    private static string SignSiweMessage(string privateKey, string message)
+    {
+        var key = new EthECKey(privateKey);
+        var signer = new EthereumMessageSigner();
+        return signer.EncodeUTF8AndSign(message, key);
+    }
+
+    private static string TryDecodeBody(byte[] bodyBytes)
+    {
+        if (bodyBytes.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        return Encoding.UTF8.GetString(bodyBytes);
     }
 
     private async Task<(JsonElement? Ticket, string? Warning)> TryFetchTicketWithRetryAsync(
@@ -452,6 +654,7 @@ public sealed class UnlockClient : IUnlockClient
         var retryCt = retryCts.Token;
 
         int attempt = 0;
+        bool generateTriggered = false;
         while (true)
         {
             attempt++;
@@ -472,6 +675,29 @@ public sealed class UnlockClient : IUnlockClient
             }
             catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
             {
+                if (!generateTriggered)
+                {
+                    generateTriggered = true;
+
+                    try
+                    {
+                        await GenerateTicketAsync(mapping, keyId, retryCt);
+                        _log.LogInformation(
+                            "Triggered Locksmith ticket generation before QR retry. chain={Chain} lock={Lock} keyId={KeyId}",
+                            mapping.ChainId,
+                            mapping.LockAddress,
+                            keyId);
+                    }
+                    catch (Exception generateEx)
+                    {
+                        _log.LogWarning(generateEx,
+                            "Failed to trigger Locksmith ticket generation. chain={Chain} lock={Lock} keyId={KeyId}",
+                            mapping.ChainId,
+                            mapping.LockAddress,
+                            keyId);
+                    }
+                }
+
                 if (retryCt.IsCancellationRequested)
                 {
                     if (ct.IsCancellationRequested)
@@ -623,6 +849,28 @@ public sealed class UnlockClient : IUnlockClient
     private static string BoolToText(bool? value)
     {
         return value.HasValue ? (value.Value ? "true" : "false") : "unknown";
+    }
+
+    private sealed class LocksmithHttpResult
+    {
+        public HttpStatusCode StatusCode { get; init; }
+        public string? ReasonPhrase { get; init; }
+        public byte[] BodyBytes { get; init; } = Array.Empty<byte>();
+        public string BodyText { get; init; } = string.Empty;
+        public bool IsSuccessStatusCode => (int)StatusCode is >= 200 and <= 299;
+    }
+
+    private sealed class LocksmithLoginRequest
+    {
+        public string Message { get; init; } = string.Empty;
+        public string Signature { get; init; } = string.Empty;
+    }
+
+    private sealed class LocksmithLoginResponse
+    {
+        public string AccessToken { get; init; } = string.Empty;
+        public string? RefreshToken { get; init; }
+        public string? WalletAddress { get; init; }
     }
 }
 

@@ -1,0 +1,77 @@
+{
+  "@type": "circles:Basket",
+  "buyer": "0xe8fc7a2d0573e5164597b05f14fa9a7fca7b215c",
+  "items": [
+    {
+      "@type": "OrderItem",
+      "seller": "0x943186fbcfd74fd575bcf9aa76a53f56b2f06aba",
+      "imageUrl": null,
+      "productCid": "QmTEyKi4sdxy46hMfSHmBw8jV3wBDsrbTMms5f3FCEC97Z",
+      "orderedItem": {
+        "sku": "test-physical-offer-01-3u98q",
+        "@type": "Product"
+      },
+      "offerSnapshot": {
+        "@type": "Offer",
+        "price": 0.1,
+        "seller": {
+          "@id": "eip155:100:0x943186fbcfd74fd575bcf9aa76a53f56b2f06aba",
+          "@type": "Organization"
+        },
+        "isOneOff": true,
+        "priceCurrency": "CRC",
+        "requiredSlots": [
+          "contactPoint.email",
+          "contactPoint.telephone",
+          "customer",
+          "shippingAddress",
+          "shippingAddress.streetAddress",
+          "shippingAddress.addressLocality",
+          "shippingAddress.postalCode",
+          "shippingAddress.addressCountry",
+          "billingAddress",
+          "billingAddress.streetAddress",
+          "billingAddress.addressLocality",
+          "billingAddress.postalCode",
+          "billingAddress.addressCountry"
+        ],
+        "fulfillmentTrigger": null,
+        "fulfillmentEndpoint": null,
+        "availableDeliveryMethod": null
+      },
+      "orderQuantity": 1
+    }
+  ],
+  "status": "Draft",
+  "chainId": 100,
+  "version": 2,
+  "@context": [
+    "https://schema.org/",
+    "https://aboutcircles.com/contexts/circles-market/"
+  ],
+  "ageProof": null,
+  "basketId": "bkt_2c692e4c3a354c5aa7f8ca",
+  "operator": "0x20ced4ed3b1651b832a77e13e54ea5cb14c8b95b",
+  "createdAt": 1771589490,
+  "modifiedAt": 1771589491,
+  "ttlSeconds": 86400,
+  "contactPoint": {
+    "@type": "ContactPoint",
+    "email": "filip.winiarski@gnosis.io",
+    "telephone": "843913431"
+  },
+  "billingAddress": {
+    "@type": "PostalAddress",
+    "postalCode": "45134",
+    "streetAddress": "13451341",
+    "addressCountry": "Germany",
+    "addressLocality": "4513"
+  },
+  "shippingAddress": {
+    "@type": "PostalAddress",
+    "postalCode": "45134",
+    "streetAddress": "13451341",
+    "addressCountry": "Germany",
+    "addressLocality": "4513"
+  }
+}

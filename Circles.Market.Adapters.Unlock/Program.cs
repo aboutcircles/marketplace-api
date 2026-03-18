@@ -325,6 +325,7 @@ publicApp.MapGet("/tickets/{chainId:long}/{seller}/{paymentReference}/qrcode", a
     IUnlockMintStore mintStore,
     IUnlockMappingResolver mappings,
     IUnlockClient unlockClient,
+    ILoggerFactory loggerFactory,
     CancellationToken ct) =>
 {
     if (!IsValidAddress(seller))
@@ -392,7 +393,7 @@ publicApp.MapGet("/tickets/{chainId:long}/{seller}/{paymentReference}/qrcode", a
             title: "QR fetch failed");
     }
 
-    var patchedResponseJson = UpsertQrCodeIntoResponseJson(existing.ResponseJson, qrcode);
+    var patchedResponseJson = UpsertQrCodeIntoResponseJson(existing.ResponseJson, qrcode, loggerFactory.CreateLogger("UnlockQrUpsert"));
     await mintStore.UpsertMintAsync(new UnlockMintRecord
     {
         ChainId = existing.ChainId,
@@ -555,7 +556,7 @@ static string? TryGetQrCode(string? responseJson)
     return null;
 }
 
-static string UpsertQrCodeIntoResponseJson(string? responseJson, string qrcodeDataUrl)
+static string UpsertQrCodeIntoResponseJson(string? responseJson, string qrcodeDataUrl, ILogger? log = null)
 {
     if (string.IsNullOrWhiteSpace(responseJson))
     {
@@ -596,8 +597,9 @@ static string UpsertQrCodeIntoResponseJson(string? responseJson, string qrcodeDa
 
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
-    catch
+    catch (Exception ex)
     {
+        log?.LogWarning(ex, "Failed to upsert qrcode into stored responseJson; replacing with minimal JSON payload");
         return JsonSerializer.Serialize(new Dictionary<string, object?>
         {
             ["qrcode"] = qrcodeDataUrl

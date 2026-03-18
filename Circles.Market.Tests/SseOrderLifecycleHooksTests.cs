@@ -14,6 +14,7 @@ public class SseOrderLifecycleHooksTests
     private Mock<IOrderStore> _ordersMock;
     private Mock<IOrderFulfillmentClient> _fulfillmentMock;
     private Mock<IMarketRouteStore> _routesMock;
+    private Mock<IOrderProcessingTraceSink> _traceMock;
     private SseOrderLifecycleHooks _sut;
 
     [SetUp]
@@ -23,11 +24,13 @@ public class SseOrderLifecycleHooksTests
         _ordersMock = new Mock<IOrderStore>();
         _fulfillmentMock = new Mock<IOrderFulfillmentClient>();
         _routesMock = new Mock<IMarketRouteStore>();
+        _traceMock = new Mock<IOrderProcessingTraceSink>();
         _sut = new SseOrderLifecycleHooks(
             _busMock.Object,
             _ordersMock.Object,
             _fulfillmentMock.Object,
             _routesMock.Object,
+            _traceMock.Object,
             NullLogger<SseOrderLifecycleHooks>.Instance);
     }
 
