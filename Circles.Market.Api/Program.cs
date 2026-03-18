@@ -231,14 +231,18 @@ publicBuilder.Services.AddSwaggerGen(c =>
 // HttpClient for dereferencing availability/inventory feeds
 publicBuilder.Services.AddHttpClient();
 
-// CORS: allow all origins/headers/methods (for demo/tooling) with exposed pagination headers
+// CORS: allow all origins with credentials support
+// SetIsOriginAllowed(_ => true) + AllowCredentials() returns the specific
+// requesting origin (not *) with Access-Control-Allow-Credentials: true.
+// Required for auth flow: browser sends credentials with cross-origin requests.
 publicBuilder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
         policy
-            .AllowAnyOrigin()
+            .SetIsOriginAllowed(_ => true)
             .AllowAnyMethod()
             .AllowAnyHeader()
+            .AllowCredentials()
             .WithExposedHeaders("X-Next-Cursor", "Link")
     );
 });
