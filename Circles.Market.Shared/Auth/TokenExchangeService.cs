@@ -100,7 +100,12 @@ public sealed class TokenExchangeService
                 ? DateTimeOffset.UtcNow.AddSeconds(body.ExpiresIn)
                 : DateTimeOffset.UtcNow.AddMinutes(5);
 
-            _cache.Set(cacheKey, principal, expiration);
+            var cacheOpts = new MemoryCacheEntryOptions
+            {
+                AbsoluteExpiration = expiration,
+                Size = 1, // Required for size-limited caches (e.g. Api's 200MB limit)
+            };
+            _cache.Set(cacheKey, principal, cacheOpts);
 
             _log.LogDebug(
                 "Token exchange succeeded for {Address} (chain {ChainId}, exchanged from {ExchangedFrom})",

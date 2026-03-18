@@ -31,6 +31,8 @@ public static class AuthServiceJwksExtensions
         services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, AuthServiceJwtPostConfigure>();
 
         // Token exchange fallback: named HttpClient + singleton service
+        // AddMemoryCache is idempotent — safe to call even if already registered
+        services.AddMemoryCache();
         services.AddHttpClient("token-exchange", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(5);
