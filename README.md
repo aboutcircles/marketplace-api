@@ -7,6 +7,7 @@ A .NET 10.0 implementation of the Circles Marketplace API, providing aggregated 
 - **Circles.Market.Api**: The main ASP.NET Core Web API service.
 - **Circles.Market.Adapters.Odoo**: Adapter for Odoo integration.
 - **Circles.Market.Adapters.CodeDispenser**: Adapter for digital code dispensation.
+- **Circles.Market.Adapters.Unlock**: Adapter for Unlock ticket NFT fulfillment.
 - **Circles.Market.Shared**: Shared models and logic across projects.
 
 ## Getting Started
@@ -37,7 +38,7 @@ docker compose up -d --build
 ```
 
 This will:
-- Build the `market-api`, `market-adapter-codedispenser`, and `market-adapter-odoo` images.
+- Build the `market-api`, `market-adapter-codedispenser`, `market-adapter-odoo`, and `market-adapter-unlock` images.
 - Start a PostgreSQL 17 instance.
 - Initialize the databases (provisioning only) using the `init-db` service.
 
@@ -53,6 +54,8 @@ Default ports:
 - CodeDispenser Admin API: `5690` (loopback by default)
 - Odoo Adapter: `5678`
 - Odoo Admin API: `5688` (loopback by default)
+- Unlock Adapter: `5682`
+- Unlock Admin API: `5692` (loopback by default)
 - IPFS API: `25001`
 - IPFS Gateway: `28081` (on host, if not conflicting)
 - PostgreSQL: `25433` (on host)

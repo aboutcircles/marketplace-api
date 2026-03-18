@@ -48,6 +48,7 @@ public class OrderPaymentFlowMetricsTests
     private Mock<IPaymentStore> _paymentsMock = null!;
     private Mock<IOrderStore> _ordersMock = null!;
     private Mock<IOrderLifecycleHooks> _hooksMock = null!;
+    private Mock<IOrderProcessingTraceSink> _traceMock = null!;
     private OrderPaymentFlow _sut = null!;
 
     [SetUp]
@@ -56,10 +57,12 @@ public class OrderPaymentFlowMetricsTests
         _paymentsMock = new Mock<IPaymentStore>();
         _ordersMock = new Mock<IOrderStore>();
         _hooksMock = new Mock<IOrderLifecycleHooks>();
+        _traceMock = new Mock<IOrderProcessingTraceSink>();
         _sut = new OrderPaymentFlow(
             _paymentsMock.Object,
             _ordersMock.Object,
             _hooksMock.Object,
+            _traceMock.Object,
             NullLogger<OrderPaymentFlow>.Instance);
     }
 

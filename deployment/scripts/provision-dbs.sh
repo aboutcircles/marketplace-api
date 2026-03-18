@@ -10,14 +10,20 @@ set -eu
 : "${DB_MARKET_API:=circles_market_api}"
 : "${DB_CODEDISP:=circles_codedisp}"
 : "${DB_ODOO:=circles_odoo}"
+: "${DB_UNLOCK:=circles_unlock}"
+: "${DB_ORDERTRACE:=circles_ordertrace}"
 
 : "${DB_MARKET_API_USER:=market_api}"
 : "${DB_CODEDISP_USER:=codedisp}"
 : "${DB_ODOO_USER:=odoo}"
+: "${DB_UNLOCK_USER:=unlock}"
+: "${DB_ORDERTRACE_USER:=ordertrace}"
 
 : "${DB_MARKET_API_PASSWORD:=}"
 : "${DB_CODEDISP_PASSWORD:=}"
 : "${DB_ODOO_PASSWORD:=}"
+: "${DB_UNLOCK_PASSWORD:=}"
+: "${DB_ORDERTRACE_PASSWORD:=}"
 
 psql_admin() {
     PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d postgres "$@"
@@ -66,5 +72,11 @@ done
 provision_service "$DB_MARKET_API" "$DB_MARKET_API_USER" "$DB_MARKET_API_PASSWORD"
 provision_service "$DB_CODEDISP" "$DB_CODEDISP_USER" "$DB_CODEDISP_PASSWORD"
 provision_service "$DB_ODOO" "$DB_ODOO_USER" "$DB_ODOO_PASSWORD"
+provision_service "$DB_UNLOCK" "$DB_UNLOCK_USER" "$DB_UNLOCK_PASSWORD"
+if [ -n "$DB_ORDERTRACE_PASSWORD" ]; then
+    provision_service "$DB_ORDERTRACE" "$DB_ORDERTRACE_USER" "$DB_ORDERTRACE_PASSWORD"
+else
+    echo "[provision-dbs] Skipping optional order-trace DB provisioning (DB_ORDERTRACE_PASSWORD not set)."
+fi
 
 echo "[provision-dbs] All services provisioned successfully."

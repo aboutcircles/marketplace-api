@@ -485,6 +485,29 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             return Results.Json(mappings ?? new List<AdminCodeProductDto>());
         });
 
+        group.MapGet("/unlock-products", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            var unlockClient = httpClientFactory.CreateClient("unlock-admin");
+            var (okMappings, mappings) = await TryGetJsonAsync<List<AdminUnlockProductDto>>(unlockClient, "/admin/mappings", bearerHeader, ct);
+            if (!okMappings) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            var totals = await LoadRouteTotalInventoryByOfferTypeAsync(marketConn, "unlock", ct);
+            if (mappings != null)
+            {
+                foreach (var m in mappings)
+                {
+                    string key = $"{m.ChainId}:{m.Seller.Trim().ToLowerInvariant()}:{m.Sku.Trim().ToLowerInvariant()}";
+                    if (totals.TryGetValue(key, out var total))
+                        m.TotalInventory = total;
+                }
+            }
+
+            return Results.Json(mappings ?? new List<AdminUnlockProductDto>());
+        });
+
         group.MapDelete("/odoo-products/{chainId:long}/{seller}/{sku}", async (HttpContext ctx, long chainId, string seller, string sku, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
         {
             if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
@@ -537,6 +560,42 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
                 $"/admin/mappings/{chainId}/{Uri.EscapeDataString(sellerNorm)}/{Uri.EscapeDataString(skuNorm)}");
             req.Headers.Authorization = bearerHeader;
             using var resp = await codeClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return Results.NotFound(new { error = "mapping not found" });
+            if (!resp.IsSuccessStatusCode)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var conn = new NpgsqlConnection(marketConn);
+            await conn.OpenAsync(ct);
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = @"UPDATE market_service_routes SET enabled=false
+WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
+                cmd.Parameters.AddWithValue(chainId);
+                cmd.Parameters.AddWithValue(sellerNorm);
+                cmd.Parameters.AddWithValue(skuNorm);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            return Results.Json(new { ok = true });
+        });
+
+        group.MapDelete("/unlock-products/{chainId:long}/{seller}/{sku}", async (HttpContext ctx, long chainId, string seller, string sku, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            var unlockClient = httpClientFactory.CreateClient("unlock-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Delete,
+                $"/admin/mappings/{chainId}/{Uri.EscapeDataString(sellerNorm)}/{Uri.EscapeDataString(skuNorm)}");
+            req.Headers.Authorization = bearerHeader;
+            using var resp = await unlockClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
                 return Results.NotFound(new { error = "mapping not found" });
             if (!resp.IsSuccessStatusCode)
@@ -720,6 +779,87 @@ RETURNING total_inventory";
             }
 
             return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "codedispenser", totalInventory = savedTotalInventory });
+        });
+
+        group.MapPost("/unlock-products", async (HttpContext ctx, AddUnlockProductRequest req, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (string.IsNullOrWhiteSpace(req.LockAddress) || string.IsNullOrWhiteSpace(req.RpcUrl) || string.IsNullOrWhiteSpace(req.ServicePrivateKey))
+                return Results.BadRequest(new { error = "lockAddress, rpcUrl, servicePrivateKey are required" });
+            if (req.TotalInventory is null || req.TotalInventory < 0)
+                return Results.BadRequest(new { error = "totalInventory is required and must be >= 0" });
+
+            bool hasDuration = req.DurationSeconds.HasValue;
+            bool hasExpiration = req.ExpirationUnix.HasValue;
+            if (hasDuration == hasExpiration)
+                return Results.BadRequest(new { error = "Provide exactly one of durationSeconds or expirationUnix" });
+            if (hasDuration && req.DurationSeconds <= 0)
+                return Results.BadRequest(new { error = "durationSeconds must be > 0" });
+            if (hasExpiration && req.ExpirationUnix <= 0)
+                return Results.BadRequest(new { error = "expirationUnix must be > 0" });
+
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string seller = req.Seller.Trim().ToLowerInvariant();
+            string sku = req.Sku.Trim().ToLowerInvariant();
+
+            var unlockClient = httpClientFactory.CreateClient("unlock-admin");
+            var mappingPayload = new
+            {
+                chainId = req.ChainId,
+                seller,
+                sku,
+                lockAddress = req.LockAddress.Trim(),
+                rpcUrl = req.RpcUrl.Trim(),
+                servicePrivateKey = req.ServicePrivateKey.Trim(),
+                durationSeconds = req.DurationSeconds,
+                expirationUnix = req.ExpirationUnix,
+                keyManagerMode = string.IsNullOrWhiteSpace(req.KeyManagerMode) ? "buyer" : req.KeyManagerMode.Trim().ToLowerInvariant(),
+                fixedKeyManager = string.IsNullOrWhiteSpace(req.FixedKeyManager) ? null : req.FixedKeyManager.Trim(),
+                locksmithBase = string.IsNullOrWhiteSpace(req.LocksmithBase) ? "https://locksmith.unlock-protocol.com" : req.LocksmithBase.Trim(),
+                locksmithToken = string.IsNullOrWhiteSpace(req.LocksmithToken) ? null : req.LocksmithToken.Trim(),
+                maxSupply = req.TotalInventory,
+                enabled = req.Enabled
+            };
+
+            using var mappingRequest = new HttpRequestMessage(HttpMethod.Put, "/admin/mappings")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(mappingPayload), Encoding.UTF8, "application/json")
+            };
+            mappingRequest.Headers.Authorization = bearerHeader;
+
+            using var mappingResponse = await unlockClient.SendAsync(mappingRequest, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!mappingResponse.IsSuccessStatusCode)
+            {
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            }
+
+            await using var market = new NpgsqlConnection(marketConn);
+            await market.OpenAsync(ct);
+            long? savedTotalInventory;
+            await using (var cmd = market.CreateCommand())
+            {
+                cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, total_inventory, enabled)
+VALUES ($1, $2, $3, 'unlock', false, $4, $5)
+ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
+  offer_type = EXCLUDED.offer_type,
+  is_one_off = false,
+  total_inventory = EXCLUDED.total_inventory,
+  enabled = EXCLUDED.enabled
+RETURNING total_inventory";
+                cmd.Parameters.AddWithValue(req.ChainId);
+                cmd.Parameters.AddWithValue(seller);
+                cmd.Parameters.AddWithValue(sku);
+                cmd.Parameters.AddWithValue(req.TotalInventory.Value);
+                cmd.Parameters.AddWithValue(req.Enabled);
+                var scalar = await cmd.ExecuteScalarAsync(ct);
+                savedTotalInventory = scalar is DBNull || scalar is null ? null : (long?)Convert.ToInt64(scalar);
+            }
+
+            return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "unlock", totalInventory = savedTotalInventory });
         });
     }
 }

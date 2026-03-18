@@ -64,4 +64,34 @@ public class EnvOutboundServiceAuthProviderTests
             Environment.SetEnvironmentVariable("CIRCLES_SERVICE_KEY", prevShared);
         }
     }
+
+    [Test]
+    public async Task TryGetHeaderAsync_ReturnsHeader_For_Unlock_Origin_When_Token_Set()
+    {
+        var prevPort = Environment.GetEnvironmentVariable("MARKET_UNLOCK_ADAPTER_PORT");
+        var prevToken = Environment.GetEnvironmentVariable("MARKET_UNLOCK_ADAPTER_TOKEN");
+        var prevShared = Environment.GetEnvironmentVariable("CIRCLES_SERVICE_KEY");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("MARKET_UNLOCK_ADAPTER_PORT", "65008");
+            Environment.SetEnvironmentVariable("MARKET_UNLOCK_ADAPTER_TOKEN", "unlock-secret");
+            Environment.SetEnvironmentVariable("CIRCLES_SERVICE_KEY", "shared-secret");
+
+            var p = new EnvOutboundServiceAuthProvider(NullLogger<EnvOutboundServiceAuthProvider>.Instance);
+
+            var uri = new Uri("http://market-adapter-unlock:65008/fulfill/100/0xseller");
+            var header = await p.TryGetHeaderAsync(uri, "fulfillment", "0xseller", 100);
+
+            Assert.That(header, Is.Not.Null);
+            Assert.That(header!.Value.headerName, Is.EqualTo("X-Circles-Service-Key"));
+            Assert.That(header!.Value.apiKey, Is.EqualTo("unlock-secret"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MARKET_UNLOCK_ADAPTER_PORT", prevPort);
+            Environment.SetEnvironmentVariable("MARKET_UNLOCK_ADAPTER_TOKEN", prevToken);
+            Environment.SetEnvironmentVariable("CIRCLES_SERVICE_KEY", prevShared);
+        }
+    }
 }
