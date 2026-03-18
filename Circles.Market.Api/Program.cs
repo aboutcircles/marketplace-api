@@ -306,11 +306,14 @@ if (!hasUrlsEnv)
 }
 
 publicApp.MapOpenApi();
-publicApp.UseSwagger();
+publicApp.UseSwagger(c =>
+{
+    c.RouteTemplate = "docs/{documentName}/swagger.json";
+});
 publicApp.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("v1/swagger.json", "Circles Market API v1");
-    c.RoutePrefix = "swagger"; // UI at /swagger
+    c.RoutePrefix = "docs"; // UI at /docs
 });
 
 publicApp.UseCors("AllowAll");
