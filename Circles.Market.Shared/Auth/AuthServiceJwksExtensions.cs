@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -29,6 +30,13 @@ public static class AuthServiceJwksExtensions
 
         services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, AuthServiceJwtPostConfigure>();
 
+        // Token exchange fallback: named HttpClient + singleton service
+        services.AddHttpClient("token-exchange", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(5);
+        });
+        services.AddSingleton<TokenExchangeService>();
+
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
             {
@@ -45,14 +53,33 @@ public static class AuthServiceJwksExtensions
 
                 options.Events = new JwtBearerEvents
                 {
-                    OnAuthenticationFailed = context =>
+                    OnAuthenticationFailed = async context =>
                     {
                         var logger = context.HttpContext.RequestServices
                             .GetRequiredService<ILoggerFactory>()
                             .CreateLogger("AuthServiceJwks");
                         logger.LogWarning(context.Exception,
                             "Auth-service JWT validation failed: {Message}", context.Exception.Message);
-                        return Task.CompletedTask;
+
+                        // Fallback: attempt token exchange (e.g. token was issued for
+                        // a different audience or by a federated issuer).
+                        string? rawToken = context.HttpContext.Request.Headers.Authorization
+                            .FirstOrDefault()?.Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase);
+                        if (string.IsNullOrEmpty(rawToken))
+                            return;
+
+                        var exchange = context.HttpContext.RequestServices
+                            .GetRequiredService<TokenExchangeService>();
+
+                        var principal = await exchange.TryExchangeAsync(
+                            rawToken, context.HttpContext.RequestAborted);
+
+                        if (principal is not null)
+                        {
+                            logger.LogInformation("Token exchange fallback succeeded");
+                            context.Principal = principal;
+                            context.Success();
+                        }
                     }
                 };
             });
