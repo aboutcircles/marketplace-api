@@ -1,8 +1,21 @@
-# Map to handle CORS allowlist
-map $http_origin $cors_origin {
+# CORS allowlist — ALLOWED_ORIGINS env var (default "*")
+# Set to "*" to allow all origins, or a specific origin to restrict.
+# nginx map treats "*" as a literal string, so we detect the wildcard
+# case separately and fall back to allowing any origin.
+map "${ALLOWED_ORIGINS}" $cors_is_wildcard {
+    default "";
+    "*"     "yes";
+}
+
+map $http_origin $cors_origin_strict {
     default "";
     "~^https?://localhost(:[0-9]+)?$" $http_origin;
     "${ALLOWED_ORIGINS}" $http_origin;
+}
+
+map $cors_is_wildcard $cors_origin {
+    default $cors_origin_strict;
+    "yes"   $http_origin;
 }
 
 # WebSocket helper
