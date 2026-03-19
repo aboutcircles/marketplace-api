@@ -13,7 +13,6 @@ public sealed class UnlockMappingEntry
     public string KeyManagerMode { get; init; } = "buyer"; // buyer | service | fixed
     public string? FixedKeyManager { get; init; }
     public string LocksmithBase { get; init; } = "https://locksmith.unlock-protocol.com";
-    public string? LocksmithToken { get; init; }
     public long MaxSupply { get; init; }
     public bool Enabled { get; init; } = true;
     public DateTimeOffset? RevokedAt { get; init; }

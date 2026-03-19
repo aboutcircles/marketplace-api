@@ -15,7 +15,6 @@ public sealed class UnlockMappingUpsertRequest
     [JsonPropertyName("keyManagerMode")] public string KeyManagerMode { get; set; } = "buyer";
     [JsonPropertyName("fixedKeyManager")] public string? FixedKeyManager { get; set; }
     [JsonPropertyName("locksmithBase")] public string LocksmithBase { get; set; } = "https://locksmith.unlock-protocol.com";
-    [JsonPropertyName("locksmithToken")] public string? LocksmithToken { get; set; }
     [JsonPropertyName("maxSupply")] public long MaxSupply { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
 }
@@ -32,7 +31,6 @@ public sealed class UnlockMappingDto
     [JsonPropertyName("keyManagerMode")] public string KeyManagerMode { get; set; } = "buyer";
     [JsonPropertyName("fixedKeyManager")] public string? FixedKeyManager { get; set; }
     [JsonPropertyName("locksmithBase")] public string LocksmithBase { get; set; } = "https://locksmith.unlock-protocol.com";
-    [JsonPropertyName("hasLocksmithToken")] public bool HasLocksmithToken { get; set; }
     [JsonPropertyName("hasServicePrivateKey")] public bool HasServicePrivateKey { get; set; }
     [JsonPropertyName("maxSupply")] public long MaxSupply { get; set; }
     [JsonPropertyName("enabled")] public bool Enabled { get; set; }

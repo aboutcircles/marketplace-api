@@ -1,5 +1,5 @@
-using Circles.Market.Shared.Admin;
-using Microsoft.AspNetCore.Authorization;
+using Nethereum.Signer;
+using Nethereum.Util;
 
 namespace Circles.Market.Adapters.Unlock.Admin;
 
@@ -18,19 +18,28 @@ public static class AdminEndpoints
             return Results.Json(result);
         });
 
-        group.MapPut("/mappings", async (UnlockMappingUpsertRequest req, IUnlockMappingResolver resolver, CancellationToken ct) =>
+        group.MapPut("/mappings", async (UnlockMappingUpsertRequest req, IUnlockMappingResolver resolver, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
+            var log = loggerFactory.CreateLogger("UnlockAdminMappings");
+
             if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
             if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku))
                 return Results.BadRequest(new { error = "seller and sku are required" });
-            if (string.IsNullOrWhiteSpace(req.LockAddress))
-                return Results.BadRequest(new { error = "lockAddress is required" });
-            if (string.IsNullOrWhiteSpace(req.RpcUrl))
-                return Results.BadRequest(new { error = "rpcUrl is required" });
             if (string.IsNullOrWhiteSpace(req.ServicePrivateKey))
                 return Results.BadRequest(new { error = "servicePrivateKey is required" });
             if (req.MaxSupply < 0)
                 return Results.BadRequest(new { error = "maxSupply must be >= 0" });
+
+            if (!IsValidAddress(req.Seller))
+                return Results.BadRequest(new { error = "seller must be a valid EVM address" });
+            if (!IsValidAddress(req.LockAddress))
+                return Results.BadRequest(new { error = "lockAddress must be a valid EVM address" });
+            if (!IsValidAbsoluteHttpUri(req.RpcUrl))
+                return Results.BadRequest(new { error = "rpcUrl must be an absolute http or https URI" });
+            if (!IsValidAbsoluteHttpUri(req.LocksmithBase))
+                return Results.BadRequest(new { error = "locksmithBase must be an absolute http or https URI" });
+            if (!TryDeriveAddress(req.ServicePrivateKey, out _, log))
+                return Results.BadRequest(new { error = "servicePrivateKey is invalid or cannot derive an address" });
 
             bool hasDuration = req.DurationSeconds.HasValue;
             bool hasExpiration = req.ExpirationUnix.HasValue;
@@ -49,6 +58,8 @@ public static class AdminEndpoints
                 return Results.BadRequest(new { error = "keyManagerMode must be one of: buyer, service, fixed" });
             if (keyManagerMode == "fixed" && string.IsNullOrWhiteSpace(req.FixedKeyManager))
                 return Results.BadRequest(new { error = "fixedKeyManager is required when keyManagerMode=fixed" });
+            if (keyManagerMode == "fixed" && !IsValidAddress(req.FixedKeyManager!))
+                return Results.BadRequest(new { error = "fixedKeyManager must be a valid EVM address when keyManagerMode=fixed" });
 
             var entry = new UnlockMappingEntry
             {
@@ -65,7 +76,6 @@ public static class AdminEndpoints
                 LocksmithBase = string.IsNullOrWhiteSpace(req.LocksmithBase)
                     ? "https://locksmith.unlock-protocol.com"
                     : req.LocksmithBase.Trim(),
-                LocksmithToken = string.IsNullOrWhiteSpace(req.LocksmithToken) ? null : req.LocksmithToken.Trim(),
                 MaxSupply = req.MaxSupply,
                 Enabled = req.Enabled,
                 RevokedAt = req.Enabled ? null : DateTimeOffset.UtcNow
@@ -80,6 +90,8 @@ public static class AdminEndpoints
             if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
             if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
                 return Results.BadRequest(new { error = "seller and sku are required" });
+            if (!IsValidAddress(seller))
+                return Results.BadRequest(new { error = "seller must be a valid EVM address" });
 
             bool deleted = await resolver.DisableMappingAsync(chainId, seller, sku, ct);
             if (!deleted) return Results.NotFound(new { error = "mapping not found" });
@@ -101,11 +113,47 @@ public static class AdminEndpoints
             KeyManagerMode = row.KeyManagerMode,
             FixedKeyManager = row.FixedKeyManager,
             LocksmithBase = row.LocksmithBase,
-            HasLocksmithToken = !string.IsNullOrWhiteSpace(row.LocksmithToken),
             HasServicePrivateKey = !string.IsNullOrWhiteSpace(row.ServicePrivateKey),
             MaxSupply = row.MaxSupply,
             Enabled = row.Enabled,
             RevokedAt = row.RevokedAt
         };
+    }
+
+    private static bool IsValidAddress(string value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+               && AddressUtil.Current.IsValidEthereumAddressHexFormat(value.Trim());
+    }
+
+    private static bool IsValidAbsoluteHttpUri(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+    }
+
+    private static bool TryDeriveAddress(string privateKey, out string address, ILogger log)
+    {
+        address = string.Empty;
+        try
+        {
+            var key = new EthECKey(privateKey.Trim());
+            address = key.GetPublicAddress();
+            return !string.IsNullOrWhiteSpace(address);
+        }
+        catch (Exception ex)
+        {
+            log.LogDebug(ex, "Failed to derive address from provided servicePrivateKey during admin validation");
+            return false;
+        }
     }
 }

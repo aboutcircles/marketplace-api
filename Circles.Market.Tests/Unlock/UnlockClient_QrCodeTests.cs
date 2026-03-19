@@ -15,7 +15,17 @@ public sealed class UnlockClient_QrCodeTests
         var handler = new RecordingHandler(req =>
         {
             Assert.That(req.RequestUri, Is.Not.Null);
-            Assert.That(req.RequestUri!.AbsolutePath, Is.EqualTo("/v2/api/ticket/100/lock/0xabc/key/2/qr"));
+            var path = req.RequestUri!.AbsolutePath;
+
+            if (path == "/v2/api/ticket/100/lock/0xabc/key/2")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}")
+                };
+            }
+
+            Assert.That(path, Is.EqualTo("/v2/api/ticket/100/lock/0xabc/key/2/qr"));
 
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -34,7 +44,9 @@ public sealed class UnlockClient_QrCodeTests
         var dataUrl = await client.GetTicketQrCodeDataUrlAsync(mapping, new BigInteger(2), CancellationToken.None);
 
         Assert.That(dataUrl, Does.StartWith("data:image/png;base64,"));
-        Assert.That(handler.Requests, Has.Count.EqualTo(1));
+        var paths = handler.Requests.Select(r => r.RequestUri!.AbsolutePath).ToList();
+        Assert.That(paths, Does.Contain("/v2/api/ticket/100/lock/0xabc/key/2"));
+        Assert.That(paths, Does.Contain("/v2/api/ticket/100/lock/0xabc/key/2/qr"));
     }
 
     [Test]
@@ -127,7 +139,16 @@ public sealed class UnlockClient_QrCodeTests
     private static UnlockClient CreateClient(RecordingHandler handler)
     {
         var factory = new SimpleHttpClientFactory(handler);
-        return new UnlockClient(factory, NullLogger<UnlockClient>.Instance);
+        return new UnlockClient(factory, new StubLocksmithAuthProvider(), NullLogger<UnlockClient>.Instance);
+    }
+
+    private sealed class StubLocksmithAuthProvider : ILocksmithAuthProvider
+    {
+        public Task<string> GetAccessTokenAsync(UnlockMappingEntry mapping, CancellationToken ct)
+            => Task.FromResult("stub-token");
+
+        public Task InvalidateAsync(UnlockMappingEntry mapping, CancellationToken ct)
+            => Task.CompletedTask;
     }
 
     private sealed class SimpleHttpClientFactory : IHttpClientFactory

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS unlock_mints (
   sku               text NOT NULL,
   buyer_address     text NOT NULL,
   lock_address      text NOT NULL,
+  quantity          bigint NOT NULL DEFAULT 1,
   transaction_hash  text NULL,
   key_id            text NULL,
   expiration_unix   bigint NULL,
@@ -91,9 +92,64 @@ CREATE TABLE IF NOT EXISTS unlock_mints (
   PRIMARY KEY (chain_id, seller_address, payment_reference)
 );
 
+ALTER TABLE unlock_mints
+  ADD COLUMN IF NOT EXISTS quantity bigint;
+
+UPDATE unlock_mints
+SET quantity = 1
+WHERE quantity IS NULL;
+
+ALTER TABLE unlock_mints
+  ALTER COLUMN quantity SET DEFAULT 1;
+
+ALTER TABLE unlock_mints
+  ALTER COLUMN quantity SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'ck_unlock_mints_quantity_positive'
+      AND conrelid = 'unlock_mints'::regclass
+  ) THEN
+    ALTER TABLE unlock_mints
+      ADD CONSTRAINT ck_unlock_mints_quantity_positive CHECK (quantity > 0);
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS ix_unlock_mints_sold_lookup
   ON unlock_mints(chain_id, seller_address, sku)
   WHERE status = 'ok';
+
+CREATE TABLE IF NOT EXISTS unlock_mint_tickets (
+  chain_id          bigint NOT NULL,
+  seller_address    text NOT NULL,
+  payment_reference text NOT NULL,
+  ticket_index      integer NOT NULL,
+  order_id          text NOT NULL,
+  sku               text NOT NULL,
+  buyer_address     text NOT NULL,
+  lock_address      text NOT NULL,
+  transaction_hash  text NULL,
+  key_id            text NULL,
+  expiration_unix   bigint NULL,
+  status            text NOT NULL,
+  warning           text NULL,
+  error             text NULL,
+  ticket_json       jsonb NULL,
+  qrcode_data_url   text NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_unlock_mint_tickets_payment_ticket_index
+      UNIQUE (chain_id, seller_address, payment_reference, ticket_index)
+);
+
+CREATE INDEX IF NOT EXISTS ix_unlock_mint_tickets_payment
+  ON unlock_mint_tickets(chain_id, seller_address, payment_reference);
+
+CREATE INDEX IF NOT EXISTS ix_unlock_mint_tickets_sku_status
+  ON unlock_mint_tickets(chain_id, seller_address, sku, status);
 ";
 
         await cmd.ExecuteNonQueryAsync(ct);

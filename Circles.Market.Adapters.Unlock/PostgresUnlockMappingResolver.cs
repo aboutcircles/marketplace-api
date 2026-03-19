@@ -27,7 +27,7 @@ public sealed class PostgresUnlockMappingResolver : IUnlockMappingResolver
         cmd.CommandText = @"
 SELECT chain_id, seller_address, sku, lock_address, rpc_url, service_private_key,
        duration_seconds, expiration_unix, key_manager_mode, fixed_key_manager,
-       locksmith_base, locksmith_token, max_supply, enabled, revoked_at
+       locksmith_base, max_supply, enabled, revoked_at
 FROM unlock_mappings
 WHERE chain_id = $1
   AND seller_address = $2
@@ -56,7 +56,7 @@ LIMIT 1";
         cmd.CommandText = @"
 SELECT chain_id, seller_address, sku, lock_address, rpc_url, service_private_key,
        duration_seconds, expiration_unix, key_manager_mode, fixed_key_manager,
-       locksmith_base, locksmith_token, max_supply, enabled, revoked_at
+       locksmith_base, max_supply, enabled, revoked_at
 FROM unlock_mappings
 ORDER BY chain_id, seller_address, sku";
 
@@ -82,7 +82,7 @@ INSERT INTO unlock_mappings(
   lock_address, rpc_url, service_private_key,
   duration_seconds, expiration_unix,
   key_manager_mode, fixed_key_manager,
-  locksmith_base, locksmith_token,
+  locksmith_base,
   max_supply,
   enabled, created_at, revoked_at
 )
@@ -91,9 +91,9 @@ VALUES (
   $4, $5, $6,
   $7, $8,
   $9, $10,
-  $11, $12,
-  $13,
-  $14, now(), CASE WHEN $14 THEN NULL ELSE now() END
+  $11,
+  $12,
+  $13, now(), CASE WHEN $13 THEN NULL ELSE now() END
 )
 ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
   lock_address = EXCLUDED.lock_address,
@@ -104,7 +104,6 @@ ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
   key_manager_mode = EXCLUDED.key_manager_mode,
   fixed_key_manager = EXCLUDED.fixed_key_manager,
   locksmith_base = EXCLUDED.locksmith_base,
-  locksmith_token = EXCLUDED.locksmith_token,
   max_supply = EXCLUDED.max_supply,
   enabled = EXCLUDED.enabled,
   revoked_at = CASE WHEN EXCLUDED.enabled THEN NULL ELSE now() END";
@@ -120,7 +119,6 @@ ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
         cmd.Parameters.AddWithValue(entry.KeyManagerMode.Trim().ToLowerInvariant());
         cmd.Parameters.AddWithValue((object?)entry.FixedKeyManager ?? DBNull.Value);
         cmd.Parameters.AddWithValue(entry.LocksmithBase.Trim());
-        cmd.Parameters.AddWithValue((object?)entry.LocksmithToken ?? DBNull.Value);
         cmd.Parameters.AddWithValue(entry.MaxSupply);
         cmd.Parameters.AddWithValue(enabled);
 
@@ -177,10 +175,9 @@ WHERE chain_id = $1
             KeyManagerMode = reader.GetString(8),
             FixedKeyManager = reader.IsDBNull(9) ? null : reader.GetString(9),
             LocksmithBase = reader.GetString(10),
-            LocksmithToken = reader.IsDBNull(11) ? null : reader.GetString(11),
-            MaxSupply = reader.GetInt64(12),
-            Enabled = reader.GetBoolean(13),
-            RevokedAt = reader.IsDBNull(14) ? null : reader.GetFieldValue<DateTimeOffset?>(14)
+            MaxSupply = reader.GetInt64(11),
+            Enabled = reader.GetBoolean(12),
+            RevokedAt = reader.IsDBNull(13) ? null : reader.GetFieldValue<DateTimeOffset?>(13)
         };
     }
 }

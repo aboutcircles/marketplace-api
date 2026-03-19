@@ -9,9 +9,10 @@
     <PackageReference Include="Circles.Profiles.Models" Version="1.0.2" />
     <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.2" />
-    <PackageReference Include="Nethereum.Web3" Version="5.8.0" />
-    <PackageReference Include="Nethereum.Accounts" Version="5.8.0" />
-    <PackageReference Include="Nethereum.Contracts" Version="5.8.0" />
+    <PackageReference Include="Nethereum.Siwe" Version="6.0.4" />
+    <PackageReference Include="Nethereum.Web3" Version="6.0.4" />
+    <PackageReference Include="Nethereum.Accounts" Version="6.0.4" />
+    <PackageReference Include="Nethereum.Contracts" Version="6.0.4" />
     <PackageReference Include="Npgsql" Version="10.0.1" />
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.0" />
