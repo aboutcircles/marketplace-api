@@ -355,6 +355,7 @@ Each service owns its own schema within the PostgreSQL instance:
 | **Market API** | `circles_market_api` | Core market data and offers. | `market_service_routes` |
 | **CodeDispenser** | `circles_codedisp` | Management of digital code pools and mappings. | `code_mappings`, `code_pools`, `code_pool_codes` |
 | **Odoo Adapter** | `circles_odoo` | Connection details and inventory mapping for Odoo ERP. | `odoo_connections`, `inventory_mappings` |
+| **Unlock Adapter** | `circles_unlock` | Unlock Protocol lock mappings and mint records. | `unlock_mappings`, `unlock_mints`, `unlock_fulfillment_runs` |
 
 ## Appendix: admin endpoints quick reference
 
@@ -363,9 +364,13 @@ Each service owns its own schema within the PostgreSQL instance:
 | Market API (admin port) | `PUT /admin/odoo-connections` | Add/update Odoo connection (routes read these for inventory/fulfillment) |
 | Market API (admin port) | `POST /admin/odoo-products` | Add/update Odoo-backed product (routes + mapping) |
 | Market API (admin port) | `POST /admin/code-products` | Add/update CodeDispenser-backed product (routes + pools/mappings) |
+| Market API (admin port) | `POST /admin/unlock-products` | Add/update Unlock-backed product (routes + lock mappings) |
 | Market API | `GET /admin/routes` | Inspect configured routes |
 | Odoo Adapter (admin port) | `PUT /admin/connections` | Upsert Odoo connection |
 | Odoo Adapter (admin port) | `PUT /admin/mappings` | Upsert inventory mapping |
 | CodeDispenser (admin port) | `POST /admin/code-pools` | Create code pool |
 | CodeDispenser (admin port) | `POST /admin/code-pools/{poolId}/seed` | Seed codes |
 | CodeDispenser (admin port) | `PUT /admin/mappings` | Upsert code mapping |
+| Unlock Adapter (admin port) | `GET /admin/mappings` | List all lock mappings |
+| Unlock Adapter (admin port) | `PUT /admin/mappings` | Upsert lock mapping |
+| Unlock Adapter (admin port) | `DELETE /admin/mappings/{chainId}/{seller}/{sku}` | Disable a lock mapping |
