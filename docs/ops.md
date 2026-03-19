@@ -12,6 +12,7 @@ To bring a seller's products live on the marketplace, you must understand these 
 *   **offer_type**: Selects which adapter handles inventory/availability/fulfillment for this SKU. Valid values:
     *   `odoo`: Use Odoo ERP adapter (supports inventory, availability, and fulfillment)
     *   `codedispenser`: Use CodeDispenser adapter (supports inventory and fulfillment only)
+    *   `unlock`: Use Unlock Protocol adapter (supports inventory and fulfillment; mints NFT keys on-chain)
 *   **is_one_off**: If `true`, this is a one-time sale (e.g., unique item) with no upstream adapter URL.
 *   **total_inventory**: Optional static informational value for initial stock at sale start.
 *   **inventoryFeed vs availabilityFeed**:
@@ -34,6 +35,7 @@ The actual adapter URLs are derived from templates in `offer_types` table at run
 |------------|-------------------|----------------------|---------------------|
 | odoo | http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku} | http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/availability/{chain_id}/{seller}/{sku} | http://market-adapter-odoo:{MARKET_ODOO_ADAPTER_PORT}/fulfill/{chain_id}/{seller} |
 | codedispenser | http://market-adapter-codedispenser:{MARKET_CODE_DISPENSER_PORT}/inventory/{chain_id}/{seller}/{sku} | (none) | http://market-adapter-codedispenser:{MARKET_CODE_DISPENSER_PORT}/fulfill/{chain_id}/{seller} |
+| unlock | http://market-adapter-unlock:{MARKET_UNLOCK_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku} | (none) | http://market-adapter-unlock:{MARKET_UNLOCK_ADAPTER_PORT}/fulfill/{chain_id}/{seller} |
 
 Template variables are expanded case-insensitively:
 *   `{seller}` - lowercase seller address
@@ -68,6 +70,9 @@ Frontend integration guide (Svelte 5): see [`docs/admin-api-frontend-guide.md`](
    * `POST /admin/code-products`
    * `GET /admin/code-products`
    * `DELETE /admin/code-products/{chainId}/{seller}/{sku}`
+   * `POST /admin/unlock-products`
+   * `GET /admin/unlock-products`
+   * `DELETE /admin/unlock-products/{chainId}/{seller}/{sku}`
    * `GET /admin/routes`
    * `PUT /admin/routes`
    * `DELETE /admin/routes/{chainId}/{seller}/{sku}`
@@ -179,6 +184,76 @@ Point the seller's offer URLs to the Odoo adapter:
 Verify the public paths via curl on the public ports (`${MARKET_ODOO_ADAPTER_PORT}`).
 Admin APIs are on `${MARKET_ODOO_ADMIN_PORT}` and require a Market-issued admin JWT.
 
+## Flow: Bring an Unlock ticket offer live
+
+The Unlock adapter bridges the marketplace to [Unlock Protocol](https://unlock-protocol.com/) locks. On fulfillment it calls `grantKeys` on-chain, then fetches the ticket and QR code from the Unlock Locksmith API.
+
+### 1. Deploy an Unlock lock contract
+Deploy a PublicLock via the Unlock Dashboard or factory contract. Note the `lockAddress` and the `chainId`.
+
+### 2. Grant key-granting rights to the service wallet
+The adapter signs `grantKeys` transactions with a service private key. The corresponding address must be either a **lock manager** or hold the `KEY_GRANTER_ROLE` on the lock contract.
+
+### 3. Configure the Unlock mapping (admin API)
+Map your marketplace SKU to the on-chain lock.
+**Endpoint (recommended):**
+```
+POST /admin/unlock-products
+```
+Example (via Market admin port):
+```bash
+curl -H "Authorization: Bearer <ADMIN_JWT>" -H "Content-Type: application/json" \
+  -d '{
+    "chainId": 100,
+    "seller": "0xabc...",
+    "sku": "event-ticket-001",
+    "lockAddress": "0xlock...",
+    "rpcUrl": "https://rpc.gnosis.gateway.fm",
+    "servicePrivateKey": "<hex-private-key>",
+    "durationSeconds": 86400,
+    "maxSupply": 500,
+    "keyManagerMode": "buyer",
+    "locksmithBase": "https://locksmith.unlock-protocol.com",
+    "totalInventory": 500,
+    "enabled": true
+  }' \
+  http://localhost:${MARKET_ADMIN_PORT}/admin/unlock-products
+```
+*   **What it does**: Proxies to the Unlock adapter admin API (`PUT /admin/mappings`) and updates `market_service_routes` in the Market DB with `offer_type=unlock`.
+
+Key fields:
+*   `lockAddress`: The deployed PublicLock contract address.
+*   `rpcUrl`: Chain RPC endpoint for sending `grantKeys` transactions.
+*   `servicePrivateKey`: Hex private key of the wallet authorized to grant keys. Stored encrypted in the adapter DB.
+*   `durationSeconds` or `expirationUnix`: Exactly one required. `durationSeconds` computes expiration relative to mint time; `expirationUnix` sets a fixed absolute expiration.
+*   `keyManagerMode`: `buyer` (default, buyer manages their own key), `service` (service wallet manages), or `fixed` (a specific address manages, requires `fixedKeyManager`).
+*   `maxSupply`: Maximum number of keys that can be minted for this SKU.
+
+### 4. Configure auth
+Use the shared `CIRCLES_SERVICE_KEY` from section **4.0** above. The Unlock adapter reads the same env var at startup.
+
+### 5. Set offer URLs
+Point the seller's offer URLs to the Unlock adapter:
+*   **Inventory**: `http://market-adapter-unlock:${MARKET_UNLOCK_ADAPTER_PORT}/inventory/{chainId}/{seller}/{sku}`
+*   **Fulfillment**: `http://market-adapter-unlock:${MARKET_UNLOCK_ADAPTER_PORT}/fulfill/{chainId}/{seller}`
+
+### 6. Verify
+Test the inventory path directly:
+```bash
+curl -H "X-Circles-Service-Key: <your_secret>" \
+  http://localhost:${MARKET_UNLOCK_ADAPTER_PORT}/inventory/100/0xabc.../event-ticket-001
+```
+Admin APIs are on `${MARKET_UNLOCK_ADMIN_PORT}` and require a Market-issued admin JWT.
+
+### 7. Locksmith tuning (optional)
+After a key is minted, the adapter fetches the ticket and QR code from Locksmith with retries. Tune via env vars:
+*   `UNLOCK_LOCKSMITH_TICKET_FETCH_TIMEOUT_MS` (default `20000`): Max wait for ticket availability.
+*   `UNLOCK_LOCKSMITH_TICKET_FETCH_INTERVAL_MS` (default `1000`): Retry interval.
+*   `UNLOCK_LOCKSMITH_QR_FETCH_TIMEOUT_MS` (default `20000`): Max wait for QR code.
+*   `UNLOCK_LOCKSMITH_QR_FETCH_INTERVAL_MS` (default `1000`): Retry interval.
+
+If the ticket/QR is not ready within the window, fulfillment still succeeds (with a warning). The QR can be fetched later via `GET /tickets/{chainId}/{seller}/{paymentReference}/qrcode`.
+
 ## Flow: Rotate a service key safely
 
 Key rotation is a simple env change:
@@ -206,7 +281,7 @@ Key rotation is a simple env change:
 ## Advanced: direct adapter admin APIs
 
 If you must call adapters directly, use the **admin ports** (not the public ports).
-The public adapter ports (`5678` for Odoo, `5680` for CodeDispenser) do **not** expose `/admin/*` routes.
+The public adapter ports (`5678` for Odoo, `5680` for CodeDispenser, `5682` for Unlock) do **not** expose `/admin/*` routes.
 
 * **Odoo Adapter (admin port `${MARKET_ODOO_ADMIN_PORT}`)**
   * `PUT http://localhost:${MARKET_ODOO_ADMIN_PORT}/admin/connections`
@@ -215,6 +290,10 @@ The public adapter ports (`5678` for Odoo, `5680` for CodeDispenser) do **not** 
   * `POST http://localhost:${MARKET_CODEDISP_ADMIN_PORT}/admin/code-pools`
   * `POST http://localhost:${MARKET_CODEDISP_ADMIN_PORT}/admin/code-pools/{poolId}/seed`
   * `PUT http://localhost:${MARKET_CODEDISP_ADMIN_PORT}/admin/mappings`
+* **Unlock Adapter (admin port `${MARKET_UNLOCK_ADMIN_PORT}`)**
+  * `GET http://localhost:${MARKET_UNLOCK_ADMIN_PORT}/admin/mappings`
+  * `PUT http://localhost:${MARKET_UNLOCK_ADMIN_PORT}/admin/mappings`
+  * `DELETE http://localhost:${MARKET_UNLOCK_ADMIN_PORT}/admin/mappings/{chainId}/{seller}/{sku}`
 
 ## Outbound adapter auth (env-based)
 
@@ -224,10 +303,12 @@ Market API uses env vars for outbound shared secrets:
 * Optional per-adapter overrides:
   * `MARKET_ODOO_ADAPTER_TOKEN`
   * `MARKET_CODE_DISPENSER_TOKEN`
+  * `MARKET_UNLOCK_ADAPTER_TOKEN`
 * Optional `MARKET_OUTBOUND_HEADER_NAME` (default `X-Circles-Service-Key`)
 * Optional origin overrides:
   * `MARKET_ODOO_ADAPTER_ORIGIN` (default `http://market-adapter-odoo:${MARKET_ODOO_ADAPTER_PORT}`)
   * `MARKET_CODE_DISPENSER_ORIGIN` (default `http://market-adapter-codedispenser:${MARKET_CODE_DISPENSER_PORT}`)
+  * `MARKET_UNLOCK_ADAPTER_ORIGIN` (default `http://market-adapter-unlock:${MARKET_UNLOCK_ADAPTER_PORT}`)
 
 Warning: If a token env var is missing, Market API will attempt an unauthenticated request; private/local outbound guards may block it.
 
