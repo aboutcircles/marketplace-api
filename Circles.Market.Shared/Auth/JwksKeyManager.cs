@@ -14,9 +14,11 @@ public sealed class JwksKeyManager : IDisposable
     private readonly ILogger<JwksKeyManager> _log;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(10);
+    private readonly TimeSpan _maxStaleness = TimeSpan.FromMinutes(60);
 
     private IList<SecurityKey>? _cachedKeys;
     private DateTimeOffset _cacheExpiry = DateTimeOffset.MinValue;
+    private DateTimeOffset _firstFailureAt = DateTimeOffset.MaxValue;
 
     public JwksKeyManager(string jwksUrl, ILogger<JwksKeyManager> log)
     {
@@ -46,6 +48,7 @@ public sealed class JwksKeyManager : IDisposable
 
             _cachedKeys = jwks.GetSigningKeys().ToList();
             _cacheExpiry = DateTimeOffset.UtcNow.Add(_cacheDuration);
+            _firstFailureAt = DateTimeOffset.MaxValue; // reset on success
 
             _log.LogInformation("JWKS refreshed, found {KeyCount} signing keys", _cachedKeys.Count);
             return _cachedKeys;
@@ -55,7 +58,21 @@ public sealed class JwksKeyManager : IDisposable
             _log.LogError(ex, "Failed to fetch JWKS from {Url}", _jwksUrl);
             if (_cachedKeys is not null)
             {
-                _log.LogWarning("Using stale JWKS keys due to refresh failure");
+                if (_firstFailureAt == DateTimeOffset.MaxValue)
+                    _firstFailureAt = DateTimeOffset.UtcNow;
+
+                var staleness = DateTimeOffset.UtcNow - _firstFailureAt;
+                if (staleness > _maxStaleness)
+                {
+                    _log.LogError(
+                        "JWKS keys stale for {Minutes:F0}min (exceeds {Max}min limit), rejecting all tokens",
+                        staleness.TotalMinutes, _maxStaleness.TotalMinutes);
+                    throw;
+                }
+
+                _log.LogWarning(
+                    "Using stale JWKS keys due to refresh failure ({Minutes:F0}min stale, max {Max}min)",
+                    staleness.TotalMinutes, _maxStaleness.TotalMinutes);
                 return _cachedKeys;
             }
             throw;
