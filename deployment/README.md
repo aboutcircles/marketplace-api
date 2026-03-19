@@ -29,6 +29,8 @@ The following variables are used solely by the market api. They configure profil
 * `IPFS_GATEWAY_URL`: The IPFS gateway URL for accessing IPFS content.
 * `IPFS_RPC_URL`: The IPFS RPC URL for interacting with the IPFS node (e.g. pinning).
 * `IPFS_RPC_BEARER`: The bearer token for IPFS RPC authentication.
+* `PINNING_SERVICE_URL`: Profile pinning service URL (required, throws if missing).
+* `AUTH_SERVICE_URL`: Authentication service URL (optional).
 * `RPC`: The RPC endpoint for interacting with the blockchain.
 * `MARKET_JWT_SECRET`: The JWT secret for signing and verifying tokens.
 * `DB_MARKET_API_PASSWORD`: The password for the market-api db user.
@@ -40,10 +42,18 @@ Admin auth (Market admin app mints, adapters validate):
 * `ADMIN_ADDRESSES`: Comma-separated allowlist of admin wallet addresses.
 * `ADMIN_AUTH_ALLOWED_DOMAINS`: Allowed domains for admin SIWE base URL.
 * `ADMIN_PUBLIC_BASE_URL`: Public base URL used in admin SIWE message.
+* `ADMIN_CORS_ALLOWED_ORIGINS`: CORS origins for admin endpoints (default: `*`).
+
+Admin ports:
+* `MARKET_ADMIN_PORT`: Market API admin port (default: `5090`).
+* `ODOO_ADMIN_PORT`: Odoo adapter admin port (default: `5688`).
+* `CODEDISP_ADMIN_PORT`: CodeDispenser adapter admin port (default: `5690`).
+* `UNLOCK_ADMIN_PORT`: Unlock adapter admin port (default: `5692`).
 
 Market admin proxy internals (for adapter admin calls):
 * `ODOO_ADMIN_INTERNAL_URL`: Absolute URL for Odoo adapter admin host (e.g. `http://market-adapter-odoo:${MARKET_ODOO_ADMIN_PORT}`).
 * `CODEDISP_ADMIN_INTERNAL_URL`: Absolute URL for CodeDispenser adapter admin host (e.g. `http://market-adapter-codedispenser:${MARKET_CODEDISP_ADMIN_PORT}`).
+* `UNLOCK_ADMIN_INTERNAL_URL`: Internal URL for Unlock adapter admin (required).
 * `ADMIN_PROXY_ALLOWED_HOSTS`: Comma-separated host allowlist for admin proxy targets.
 
 Outbound adapter auth (env-based shared secrets):
@@ -61,6 +71,8 @@ Outbound adapter auth (env-based shared secrets):
 * `MARKET_ADAPTER_ODOO_TAG`: The image tag for the market adapter odoo container (e.g., `latest`).
 * `DB_ODOO_PASSWORD`: The password for the odoo db user.
 
+##### 1.2.5 Unlock configuration
+* `MARKET_ADAPTER_UNLOCK_TAG`: Docker image tag for the unlock adapter container (e.g., `latest`).
 
 ### 2. Dev environment
 There are two variants of the same environment. One is meant for local development (`docker-compose.dev.yml`), the other
