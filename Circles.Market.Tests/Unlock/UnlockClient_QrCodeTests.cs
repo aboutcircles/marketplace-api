@@ -124,6 +124,70 @@ public sealed class UnlockClient_QrCodeTests
         }
     }
 
+    [Test]
+    public async Task TrySendTicketEmailAsync_UsesExpectedPathAndReturnsTrueOnSuccess()
+    {
+        var handler = new RecordingHandler(req =>
+        {
+            Assert.That(req.Method, Is.EqualTo(HttpMethod.Post));
+            Assert.That(req.RequestUri, Is.Not.Null);
+            Assert.That(req.RequestUri!.AbsolutePath, Is.EqualTo("/v2/api/ticket/100/0xabc/2/email"));
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"sent\":true}")
+            };
+        });
+
+        var client = CreateClient(handler);
+        var mapping = new UnlockMappingEntry
+        {
+            ChainId = 100,
+            LockAddress = "0xabc",
+            LocksmithBase = "https://locksmith.example/"
+        };
+
+        var method = typeof(UnlockClient).GetMethod(
+            "TrySendTicketEmailAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(method, Is.Not.Null);
+
+        var task = (Task<bool>)method!.Invoke(client, new object[] { mapping, new BigInteger(2), CancellationToken.None })!;
+        var sent = await task.ConfigureAwait(false);
+
+        Assert.That(sent, Is.True);
+        Assert.That(handler.Requests, Has.Count.EqualTo(1));
+    }
+
+    [Test]
+    public async Task TrySendTicketEmailAsync_ReturnsFalseOnNonSuccessStatus()
+    {
+        var handler = new RecordingHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = new StringContent("forbidden")
+            });
+
+        var client = CreateClient(handler);
+        var mapping = new UnlockMappingEntry
+        {
+            ChainId = 100,
+            LockAddress = "0xabc",
+            LocksmithBase = "https://locksmith.example/"
+        };
+
+        var method = typeof(UnlockClient).GetMethod(
+            "TrySendTicketEmailAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(method, Is.Not.Null);
+
+        var task = (Task<bool>)method!.Invoke(client, new object[] { mapping, new BigInteger(2), CancellationToken.None })!;
+        var sent = await task.ConfigureAwait(false);
+
+        Assert.That(sent, Is.False);
+        Assert.That(handler.Requests, Has.Count.EqualTo(1));
+    }
+
     private static UnlockClient CreateClient(RecordingHandler handler)
     {
         var factory = new SimpleHttpClientFactory(handler);

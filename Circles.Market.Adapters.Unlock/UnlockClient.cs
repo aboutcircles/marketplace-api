@@ -24,13 +24,23 @@ public sealed class UnlockMintOutcome
     public long ExpirationUnix { get; init; }
     public JsonElement? Ticket { get; init; }
     public string? QrCodeDataUrl { get; init; }
+    public bool? EmailDeliveryAttempted { get; init; }
+    public bool? EmailDeliverySent { get; init; }
+    public string? EmailRecipient { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
     public string? Error { get; init; }
 }
 
+public sealed class UnlockRecipientInfo
+{
+    public string? Email { get; init; }
+    public string? GivenName { get; init; }
+    public string? FamilyName { get; init; }
+}
+
 public interface IUnlockClient
 {
-    Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, CancellationToken ct);
+    Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, UnlockRecipientInfo? recipient, CancellationToken ct);
     Task<string> GetTicketQrCodeDataUrlAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct);
 }
 
@@ -45,7 +55,7 @@ public sealed class UnlockClient : IUnlockClient
         _log = log;
     }
 
-    public async Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, CancellationToken ct)
+    public async Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, UnlockRecipientInfo? recipient, CancellationToken ct)
     {
         var expirationUnix = ResolveExpiration(mapping);
         UnlockPreflightInfo? preflight = null;
@@ -200,6 +210,44 @@ public sealed class UnlockClient : IUnlockClient
                     keyId.Value);
             }
 
+            bool emailDeliveryAttempted = false;
+            bool? emailDeliverySent = null;
+            var recipientEmail = string.IsNullOrWhiteSpace(recipient?.Email) ? null : recipient!.Email!.Trim();
+            if (!string.IsNullOrWhiteSpace(recipientEmail))
+            {
+                emailDeliveryAttempted = true;
+                try
+                {
+                    emailDeliverySent = await TrySendTicketEmailAsync(mapping, keyId.Value, ct);
+                    if (emailDeliverySent == false)
+                    {
+                        warnings.Add("locksmithEmailSendFailed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add("locksmithEmailSendFailed");
+                    _log.LogWarning(ex,
+                        "Locksmith email ticket dispatch failed for chain={Chain} lock={Lock} keyId={KeyId} recipientEmail={RecipientEmail}",
+                        mapping.ChainId,
+                        mapping.LockAddress,
+                        keyId.Value,
+                        recipientEmail);
+                }
+            }
+            else
+            {
+                warnings.Add("locksmithEmailMissingRecipient");
+                _log.LogInformation(
+                    "Skipping Locksmith email ticket dispatch due to missing recipient email. chain={Chain} lock={Lock} keyId={KeyId} buyer={Buyer} givenName={GivenName} familyName={FamilyName}",
+                    mapping.ChainId,
+                    mapping.LockAddress,
+                    keyId.Value,
+                    buyerAddress,
+                    recipient?.GivenName,
+                    recipient?.FamilyName);
+            }
+
             return new UnlockMintOutcome
             {
                 Success = true,
@@ -208,6 +256,9 @@ public sealed class UnlockClient : IUnlockClient
                 KeyId = keyId,
                 Ticket = ticket,
                 QrCodeDataUrl = qrCodeDataUrl,
+                EmailDeliveryAttempted = emailDeliveryAttempted,
+                EmailDeliverySent = emailDeliverySent,
+                EmailRecipient = recipientEmail,
                 Warnings = warnings
             };
         }
@@ -256,6 +307,51 @@ public sealed class UnlockClient : IUnlockClient
                 Error = ex.Message
             };
         }
+    }
+
+    private async Task<bool> TrySendTicketEmailAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
+    {
+        var relative = $"v2/api/ticket/{mapping.ChainId}/{mapping.LockAddress}/{keyId}/email";
+
+        using var client = _httpClientFactory.CreateClient();
+        client.BaseAddress = new Uri(mapping.LocksmithBase.Trim().TrimEnd('/') + "/");
+
+        var bearerToken = await ResolveLocksmithBearerTokenAsync(mapping, preferConfiguredToken: true, ct);
+        if (!string.IsNullOrWhiteSpace(bearerToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, relative);
+        using var response = await client.SendAsync(req, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _log.LogWarning(
+                "Locksmith email ticket dispatch returned non-success. chain={Chain} lock={Lock} keyId={KeyId} status={Status} body={Body}",
+                mapping.ChainId,
+                mapping.LockAddress,
+                keyId,
+                (int)response.StatusCode,
+                body);
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("sent", out var sent) && sent.ValueKind == JsonValueKind.False)
+            {
+                return false;
+            }
+        }
+        catch
+        {
+            // tolerate non-JSON or empty success body
+        }
+
+        return true;
     }
 
     private static long ResolveExpiration(UnlockMappingEntry mapping)
