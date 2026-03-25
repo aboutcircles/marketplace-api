@@ -468,6 +468,13 @@ static object BuildReplayPayload(FulfillmentRequest req, string seller, UnlockMi
         emailDeliveryAttempted = TryGetBoolProperty(existing?.ResponseJson, "emailDeliveryAttempted"),
         emailDeliverySent = TryGetBoolProperty(existing?.ResponseJson, "emailDeliverySent"),
         emailRecipient = TryGetStringProperty(existing?.ResponseJson, "emailRecipient"),
+        emailDeliveryError = TryGetStringProperty(existing?.ResponseJson, "emailDeliveryError"),
+        userMetadataUpdateAttempted = TryGetBoolProperty(existing?.ResponseJson, "userMetadataUpdateAttempted"),
+        userMetadataUpdateSuccess = TryGetBoolProperty(existing?.ResponseJson, "userMetadataUpdateSuccess"),
+        userMetadataUpdateError = TryGetStringProperty(existing?.ResponseJson, "userMetadataUpdateError"),
+        metadataUpdateAttempted = TryGetBoolProperty(existing?.ResponseJson, "metadataUpdateAttempted"),
+        metadataUpdateSuccess = TryGetBoolProperty(existing?.ResponseJson, "metadataUpdateSuccess"),
+        metadataUpdateError = TryGetStringProperty(existing?.ResponseJson, "metadataUpdateError"),
         ticket = TryGetTicket(existing?.ResponseJson),
         qrcode = TryGetQrCode(existing?.ResponseJson)
     };
@@ -500,6 +507,13 @@ static object BuildSuccessOrErrorPayload(
         emailDeliveryAttempted = mint.EmailDeliveryAttempted,
         emailDeliverySent = mint.EmailDeliverySent,
         emailRecipient = mint.EmailRecipient,
+        emailDeliveryError = mint.EmailDeliveryError,
+        userMetadataUpdateAttempted = mint.UserMetadataUpdateAttempted,
+        userMetadataUpdateSuccess = mint.UserMetadataUpdateSuccess,
+        userMetadataUpdateError = mint.UserMetadataUpdateError,
+        metadataUpdateAttempted = mint.MetadataUpdateAttempted,
+        metadataUpdateSuccess = mint.MetadataUpdateSuccess,
+        metadataUpdateError = mint.MetadataUpdateError,
         ticket = mint.Ticket,
         qrcode = mint.QrCodeDataUrl
     };

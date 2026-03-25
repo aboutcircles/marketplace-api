@@ -152,8 +152,10 @@ public sealed class UnlockClient_QrCodeTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.That(method, Is.Not.Null);
 
-        var task = (Task<bool>)method!.Invoke(client, new object[] { mapping, new BigInteger(2), CancellationToken.None })!;
-        var sent = await task.ConfigureAwait(false);
+        var task = (Task)method!.Invoke(client, new object[] { mapping, new BigInteger(2), CancellationToken.None })!;
+        await task.ConfigureAwait(false);
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var sent = (bool)result.GetType().GetProperty("Success")!.GetValue(result)!;
 
         Assert.That(sent, Is.True);
         Assert.That(handler.Requests, Has.Count.EqualTo(1));
@@ -181,11 +183,99 @@ public sealed class UnlockClient_QrCodeTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.That(method, Is.Not.Null);
 
-        var task = (Task<bool>)method!.Invoke(client, new object[] { mapping, new BigInteger(2), CancellationToken.None })!;
-        var sent = await task.ConfigureAwait(false);
+        var task = (Task)method!.Invoke(client, new object[] { mapping, new BigInteger(2), CancellationToken.None })!;
+        await task.ConfigureAwait(false);
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var sent = (bool)result.GetType().GetProperty("Success")!.GetValue(result)!;
 
         Assert.That(sent, Is.False);
         Assert.That(handler.Requests, Has.Count.EqualTo(1));
+    }
+
+    [Test]
+    public async Task TryUpdateKeyMetadataAsync_SendsEmailAndNameMetadata()
+    {
+        string? requestBody = null;
+        var handler = new RecordingHandler(req =>
+        {
+            Assert.That(req.Method, Is.EqualTo(HttpMethod.Put));
+            Assert.That(req.RequestUri, Is.Not.Null);
+            Assert.That(req.RequestUri!.AbsolutePath, Is.EqualTo("/v2/api/metadata/100/locks/0xabc/keys/2"));
+            requestBody = req.Content is null ? null : req.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}")
+            };
+        });
+
+        var client = CreateClient(handler);
+        var mapping = new UnlockMappingEntry
+        {
+            ChainId = 100,
+            LockAddress = "0xabc",
+            LocksmithBase = "https://locksmith.example/"
+        };
+
+        var method = typeof(UnlockClient).GetMethod(
+            "TryUpdateKeyMetadataAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(method, Is.Not.Null);
+
+        var recipient = new UnlockRecipientInfo
+        {
+            Email = "alice@example.com",
+            GivenName = "Alice",
+            FamilyName = "Doe"
+        };
+
+        var task = (Task)method!.Invoke(client, new object[] { mapping, new BigInteger(2), "0xbuyer", recipient, CancellationToken.None })!;
+        await task.ConfigureAwait(false);
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var ok = (bool)result.GetType().GetProperty("Success")!.GetValue(result)!;
+
+        Assert.That(ok, Is.True);
+        Assert.That(handler.Requests, Has.Count.EqualTo(1));
+        Assert.That(requestBody, Is.Not.Null);
+        Assert.That(requestBody, Does.Contain("\"email\":\"alice@example.com\""));
+        Assert.That(requestBody, Does.Contain("\"givenName\":\"Alice\""));
+        Assert.That(requestBody, Does.Contain("\"familyName\":\"Doe\""));
+        Assert.That(requestBody, Does.Contain("\"name\":\"Alice Doe\""));
+    }
+
+    [Test]
+    public async Task TryUpdateKeyMetadataAsync_ReturnsFalseOnNonSuccessStatus()
+    {
+        var handler = new RecordingHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = new StringContent("forbidden")
+            });
+
+        var client = CreateClient(handler);
+        var mapping = new UnlockMappingEntry
+        {
+            ChainId = 100,
+            LockAddress = "0xabc",
+            LocksmithBase = "https://locksmith.example/"
+        };
+
+        var method = typeof(UnlockClient).GetMethod(
+            "TryUpdateKeyMetadataAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(method, Is.Not.Null);
+
+        var recipient = new UnlockRecipientInfo
+        {
+            Email = "alice@example.com"
+        };
+
+        var task = (Task)method!.Invoke(client, new object[] { mapping, new BigInteger(2), "0xbuyer", recipient, CancellationToken.None })!;
+        await task.ConfigureAwait(false);
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var ok = (bool)result.GetType().GetProperty("Success")!.GetValue(result)!;
+
+        Assert.That(ok, Is.False);
     }
 
     private static UnlockClient CreateClient(RecordingHandler handler)
