@@ -24,13 +24,36 @@ public sealed class UnlockMintOutcome
     public long ExpirationUnix { get; init; }
     public JsonElement? Ticket { get; init; }
     public string? QrCodeDataUrl { get; init; }
+    public bool? EmailDeliveryAttempted { get; init; }
+    public bool? EmailDeliverySent { get; init; }
+    public string? EmailRecipient { get; init; }
+    public string? EmailDeliveryError { get; init; }
+    public bool? UserMetadataUpdateAttempted { get; init; }
+    public bool? UserMetadataUpdateSuccess { get; init; }
+    public string? UserMetadataUpdateError { get; init; }
+    public bool? MetadataUpdateAttempted { get; init; }
+    public bool? MetadataUpdateSuccess { get; init; }
+    public string? MetadataUpdateError { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
+    public string? Error { get; init; }
+}
+
+public sealed class UnlockRecipientInfo
+{
+    public string? Email { get; init; }
+    public string? GivenName { get; init; }
+    public string? FamilyName { get; init; }
+}
+
+internal sealed class LocksmithStepResult
+{
+    public bool Success { get; init; }
     public string? Error { get; init; }
 }
 
 public interface IUnlockClient
 {
-    Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, CancellationToken ct);
+    Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, UnlockRecipientInfo? recipient, CancellationToken ct);
     Task<string> GetTicketQrCodeDataUrlAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct);
 }
 
@@ -45,7 +68,7 @@ public sealed class UnlockClient : IUnlockClient
         _log = log;
     }
 
-    public async Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, CancellationToken ct)
+    public async Task<UnlockMintOutcome> MintTicketAsync(UnlockMappingEntry mapping, string buyerAddress, UnlockRecipientInfo? recipient, CancellationToken ct)
     {
         var expirationUnix = ResolveExpiration(mapping);
         UnlockPreflightInfo? preflight = null;
@@ -200,6 +223,112 @@ public sealed class UnlockClient : IUnlockClient
                     keyId.Value);
             }
 
+            bool userMetadataUpdateAttempted = false;
+            bool? userMetadataUpdateSuccess = null;
+            string? userMetadataUpdateError = null;
+            if (recipient is not null)
+            {
+                try
+                {
+                    var userMetadataRes = await TryUpdateUserMetadataAsync(mapping, buyerAddress, recipient, ct);
+                    userMetadataUpdateAttempted = true;
+                    userMetadataUpdateSuccess = userMetadataRes.Success;
+                    userMetadataUpdateError = userMetadataRes.Error;
+                    if (!userMetadataRes.Success)
+                    {
+                        warnings.Add("locksmithUserMetadataUpdateFailed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    userMetadataUpdateAttempted = true;
+                    userMetadataUpdateSuccess = false;
+                    userMetadataUpdateError = ex.Message;
+                    warnings.Add("locksmithUserMetadataUpdateFailed");
+                    _log.LogWarning(ex,
+                        "Locksmith user metadata update failed for chain={Chain} lock={Lock} owner={Owner}",
+                        mapping.ChainId,
+                        mapping.LockAddress,
+                        buyerAddress);
+                }
+            }
+
+            bool metadataUpdateAttempted = false;
+            bool? metadataUpdateSuccess = null;
+            string? metadataUpdateError = null;
+            if (recipient is not null)
+            {
+                try
+                {
+                    var metadataRes = await TryUpdateKeyMetadataAsync(mapping, keyId.Value, buyerAddress, recipient, ct);
+                    metadataUpdateAttempted = true;
+                    metadataUpdateSuccess = metadataRes.Success;
+                    metadataUpdateError = metadataRes.Error;
+                    if (!metadataRes.Success)
+                    {
+                        warnings.Add("locksmithMetadataUpdateFailed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    metadataUpdateAttempted = true;
+                    metadataUpdateSuccess = false;
+                    metadataUpdateError = ex.Message;
+                    warnings.Add("locksmithMetadataUpdateFailed");
+                    _log.LogWarning(ex,
+                        "Locksmith key metadata update failed for chain={Chain} lock={Lock} keyId={KeyId}",
+                        mapping.ChainId,
+                        mapping.LockAddress,
+                        keyId.Value);
+                }
+            }
+
+            bool emailDeliveryAttempted = false;
+            bool? emailDeliverySent = null;
+            string? emailDeliveryError = null;
+            var recipientEmail = string.IsNullOrWhiteSpace(recipient?.Email) ? null : recipient!.Email!.Trim();
+            if (!string.IsNullOrWhiteSpace(recipientEmail))
+            {
+                emailDeliveryAttempted = true;
+                try
+                {
+                    var emailRes = await TrySendTicketEmailAsync(mapping, keyId.Value, ct);
+                    emailDeliverySent = emailRes.Success;
+                    emailDeliveryError = emailRes.Error;
+                    if (!emailRes.Success)
+                    {
+                        warnings.Add("locksmithEmailSendFailed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    emailDeliverySent = false;
+                    emailDeliveryError = ex.Message;
+                    warnings.Add("locksmithEmailSendFailed");
+                    _log.LogWarning(ex,
+                        "Locksmith email ticket dispatch failed for chain={Chain} lock={Lock} keyId={KeyId} recipientEmail={RecipientEmail}",
+                        mapping.ChainId,
+                        mapping.LockAddress,
+                        keyId.Value,
+                        recipientEmail);
+                }
+            }
+            else
+            {
+                emailDeliveryAttempted = false;
+                emailDeliverySent = false;
+                emailDeliveryError = "missingRecipientEmail";
+                warnings.Add("locksmithEmailMissingRecipient");
+                _log.LogInformation(
+                    "Skipping Locksmith email ticket dispatch due to missing recipient email. chain={Chain} lock={Lock} keyId={KeyId} buyer={Buyer} givenName={GivenName} familyName={FamilyName}",
+                    mapping.ChainId,
+                    mapping.LockAddress,
+                    keyId.Value,
+                    buyerAddress,
+                    recipient?.GivenName,
+                    recipient?.FamilyName);
+            }
+
             return new UnlockMintOutcome
             {
                 Success = true,
@@ -208,6 +337,16 @@ public sealed class UnlockClient : IUnlockClient
                 KeyId = keyId,
                 Ticket = ticket,
                 QrCodeDataUrl = qrCodeDataUrl,
+                EmailDeliveryAttempted = emailDeliveryAttempted,
+                EmailDeliverySent = emailDeliverySent,
+                EmailRecipient = recipientEmail,
+                EmailDeliveryError = emailDeliveryError,
+                UserMetadataUpdateAttempted = userMetadataUpdateAttempted,
+                UserMetadataUpdateSuccess = userMetadataUpdateSuccess,
+                UserMetadataUpdateError = userMetadataUpdateError,
+                MetadataUpdateAttempted = metadataUpdateAttempted,
+                MetadataUpdateSuccess = metadataUpdateSuccess,
+                MetadataUpdateError = metadataUpdateError,
                 Warnings = warnings
             };
         }
@@ -256,6 +395,214 @@ public sealed class UnlockClient : IUnlockClient
                 Error = ex.Message
             };
         }
+    }
+
+    private async Task<LocksmithStepResult> TrySendTicketEmailAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
+    {
+        var relative = $"v2/api/ticket/{mapping.ChainId}/{mapping.LockAddress}/{keyId}/email";
+
+        using var client = _httpClientFactory.CreateClient();
+        client.BaseAddress = new Uri(mapping.LocksmithBase.Trim().TrimEnd('/') + "/");
+
+        var bearerToken = await ResolveLocksmithBearerTokenAsync(mapping, preferConfiguredToken: true, ct);
+        if (!string.IsNullOrWhiteSpace(bearerToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, relative);
+        using var response = await client.SendAsync(req, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = $"status={(int)response.StatusCode} reason={response.ReasonPhrase} body={TrimForLog(body)}";
+            _log.LogWarning(
+                "Locksmith email ticket dispatch returned non-success. chain={Chain} lock={Lock} keyId={KeyId} status={Status} body={Body}",
+                mapping.ChainId,
+                mapping.LockAddress,
+                keyId,
+                (int)response.StatusCode,
+                body);
+            return new LocksmithStepResult { Success = false, Error = error };
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("sent", out var sent) && sent.ValueKind == JsonValueKind.False)
+            {
+                return new LocksmithStepResult { Success = false, Error = "response.sent=false" };
+            }
+        }
+        catch
+        {
+            // tolerate non-JSON or empty success body
+        }
+
+        return new LocksmithStepResult { Success = true };
+    }
+
+    private async Task<LocksmithStepResult> TryUpdateKeyMetadataAsync(
+        UnlockMappingEntry mapping,
+        BigInteger keyId,
+        string buyerAddress,
+        UnlockRecipientInfo recipient,
+        CancellationToken ct)
+    {
+        var metadata = BuildMetadataPayload(buyerAddress, recipient);
+        if (metadata.Count == 0)
+        {
+            return new LocksmithStepResult { Success = true };
+        }
+
+        var relative = $"v2/api/metadata/{mapping.ChainId}/locks/{mapping.LockAddress}/keys/{keyId}";
+
+        using var client = _httpClientFactory.CreateClient();
+        client.BaseAddress = new Uri(mapping.LocksmithBase.Trim().TrimEnd('/') + "/");
+
+        var bearerToken = await ResolveLocksmithBearerTokenAsync(mapping, preferConfiguredToken: true, ct);
+        if (!string.IsNullOrWhiteSpace(bearerToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Put, relative)
+        {
+            Content = JsonContent.Create(new { metadata })
+        };
+
+        using var response = await client.SendAsync(req, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = $"status={(int)response.StatusCode} reason={response.ReasonPhrase} body={TrimForLog(body)}";
+            _log.LogWarning(
+                "Locksmith key metadata update returned non-success. chain={Chain} lock={Lock} keyId={KeyId} status={Status} body={Body}",
+                mapping.ChainId,
+                mapping.LockAddress,
+                keyId,
+                (int)response.StatusCode,
+                body);
+            return new LocksmithStepResult { Success = false, Error = error };
+        }
+
+        return new LocksmithStepResult { Success = true };
+    }
+
+    private async Task<LocksmithStepResult> TryUpdateUserMetadataAsync(
+        UnlockMappingEntry mapping,
+        string buyerAddress,
+        UnlockRecipientInfo recipient,
+        CancellationToken ct)
+    {
+        var metadata = BuildUserMetadataPayload(recipient);
+        if (!metadata.HasAnyData)
+        {
+            return new LocksmithStepResult { Success = true };
+        }
+
+        var relative = $"v2/api/metadata/{mapping.ChainId}/locks/{mapping.LockAddress}/users/{buyerAddress}";
+        using var client = _httpClientFactory.CreateClient();
+        client.BaseAddress = new Uri(mapping.LocksmithBase.Trim().TrimEnd('/') + "/");
+
+        var bearerToken = await ResolveLocksmithBearerTokenAsync(mapping, preferConfiguredToken: true, ct);
+        if (!string.IsNullOrWhiteSpace(bearerToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Put, relative)
+        {
+            Content = JsonContent.Create(new
+            {
+                metadata = new
+                {
+                    @public = metadata.Public,
+                    @protected = metadata.Protected
+                }
+            })
+        };
+
+        using var response = await client.SendAsync(req, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = $"status={(int)response.StatusCode} reason={response.ReasonPhrase} body={TrimForLog(body)}";
+            _log.LogWarning(
+                "Locksmith user metadata update returned non-success. chain={Chain} lock={Lock} owner={Owner} status={Status} body={Body}",
+                mapping.ChainId,
+                mapping.LockAddress,
+                buyerAddress,
+                (int)response.StatusCode,
+                body);
+            return new LocksmithStepResult { Success = false, Error = error };
+        }
+
+        return new LocksmithStepResult { Success = true };
+    }
+
+    private static Dictionary<string, object?> BuildMetadataPayload(string buyerAddress, UnlockRecipientInfo recipient)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["buyer"] = buyerAddress
+        };
+
+        if (!string.IsNullOrWhiteSpace(recipient.Email)) payload["email"] = recipient.Email!.Trim();
+        if (!string.IsNullOrWhiteSpace(recipient.GivenName)) payload["givenName"] = recipient.GivenName!.Trim();
+        if (!string.IsNullOrWhiteSpace(recipient.FamilyName)) payload["familyName"] = recipient.FamilyName!.Trim();
+
+        var given = string.IsNullOrWhiteSpace(recipient.GivenName) ? null : recipient.GivenName!.Trim();
+        var family = string.IsNullOrWhiteSpace(recipient.FamilyName) ? null : recipient.FamilyName!.Trim();
+        var fullName = (given, family) switch
+        {
+            (not null, not null) => $"{given} {family}",
+            (not null, null) => given,
+            (null, not null) => family,
+            _ => null
+        };
+        if (!string.IsNullOrWhiteSpace(fullName)) payload["name"] = fullName;
+
+        return payload;
+    }
+
+    private static (Dictionary<string, object?> Public, Dictionary<string, object?> Protected, bool HasAnyData) BuildUserMetadataPayload(UnlockRecipientInfo recipient)
+    {
+        var publicData = new Dictionary<string, object?>();
+        var protectedData = new Dictionary<string, object?>();
+
+        var email = string.IsNullOrWhiteSpace(recipient.Email) ? null : recipient.Email.Trim();
+        var given = string.IsNullOrWhiteSpace(recipient.GivenName) ? null : recipient.GivenName.Trim();
+        var family = string.IsNullOrWhiteSpace(recipient.FamilyName) ? null : recipient.FamilyName.Trim();
+        var fullName = (given, family) switch
+        {
+            (not null, not null) => $"{given} {family}",
+            (not null, null) => given,
+            (null, not null) => family,
+            _ => null
+        };
+
+        if (!string.IsNullOrWhiteSpace(email)) protectedData["email"] = email;
+        if (!string.IsNullOrWhiteSpace(given))
+        {
+            protectedData["givenName"] = given;
+            publicData["givenName"] = given;
+        }
+
+        if (!string.IsNullOrWhiteSpace(family))
+        {
+            protectedData["familyName"] = family;
+            publicData["familyName"] = family;
+        }
+
+        if (!string.IsNullOrWhiteSpace(fullName))
+        {
+            protectedData["name"] = fullName;
+            publicData["name"] = fullName;
+        }
+
+        return (publicData, protectedData, publicData.Count > 0 || protectedData.Count > 0);
     }
 
     private static long ResolveExpiration(UnlockMappingEntry mapping)
@@ -571,6 +918,12 @@ public sealed class UnlockClient : IUnlockClient
         }
 
         return Encoding.UTF8.GetString(bodyBytes);
+    }
+
+    private static string TrimForLog(string? value, int maxLen = 400)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        return value.Length <= maxLen ? value : value[..maxLen] + "...";
     }
 
     private async Task<(JsonElement? Ticket, string? Warning)> TryFetchTicketWithRetryAsync(

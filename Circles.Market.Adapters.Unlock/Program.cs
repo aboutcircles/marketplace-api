@@ -283,7 +283,16 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         }, (JsonSerializerOptions?)Circles.Profiles.Models.JsonSerializerOptions.JsonLd);
     }
 
-    var mint = await unlockClient.MintTicketAsync(picked.mapping, buyer, ct);
+    var mint = await unlockClient.MintTicketAsync(
+        picked.mapping,
+        buyer,
+        new UnlockRecipientInfo
+        {
+            Email = req.ContactPoint?.Email,
+            GivenName = req.Customer?.GivenName,
+            FamilyName = req.Customer?.FamilyName
+        },
+        ct);
 
     var payloadObj = BuildSuccessOrErrorPayload(req, sellerNorm, picked.item.Sku, picked.mapping, buyer, mint);
     var payloadJson = JsonSerializer.Serialize(payloadObj);
@@ -456,6 +465,16 @@ static object BuildReplayPayload(FulfillmentRequest req, string seller, UnlockMi
         expirationUnix = existing?.ExpirationUnix,
         message,
         warnings = TryGetWarnings(existing?.ResponseJson, existing?.Warning),
+        emailDeliveryAttempted = TryGetBoolProperty(existing?.ResponseJson, "emailDeliveryAttempted"),
+        emailDeliverySent = TryGetBoolProperty(existing?.ResponseJson, "emailDeliverySent"),
+        emailRecipient = TryGetStringProperty(existing?.ResponseJson, "emailRecipient"),
+        emailDeliveryError = TryGetStringProperty(existing?.ResponseJson, "emailDeliveryError"),
+        userMetadataUpdateAttempted = TryGetBoolProperty(existing?.ResponseJson, "userMetadataUpdateAttempted"),
+        userMetadataUpdateSuccess = TryGetBoolProperty(existing?.ResponseJson, "userMetadataUpdateSuccess"),
+        userMetadataUpdateError = TryGetStringProperty(existing?.ResponseJson, "userMetadataUpdateError"),
+        metadataUpdateAttempted = TryGetBoolProperty(existing?.ResponseJson, "metadataUpdateAttempted"),
+        metadataUpdateSuccess = TryGetBoolProperty(existing?.ResponseJson, "metadataUpdateSuccess"),
+        metadataUpdateError = TryGetStringProperty(existing?.ResponseJson, "metadataUpdateError"),
         ticket = TryGetTicket(existing?.ResponseJson),
         qrcode = TryGetQrCode(existing?.ResponseJson)
     };
@@ -485,6 +504,16 @@ static object BuildSuccessOrErrorPayload(
         expirationUnix = mint.ExpirationUnix,
         warnings = mint.Warnings,
         message = mint.Success ? "Unlock ticket minted" : mint.Error,
+        emailDeliveryAttempted = mint.EmailDeliveryAttempted,
+        emailDeliverySent = mint.EmailDeliverySent,
+        emailRecipient = mint.EmailRecipient,
+        emailDeliveryError = mint.EmailDeliveryError,
+        userMetadataUpdateAttempted = mint.UserMetadataUpdateAttempted,
+        userMetadataUpdateSuccess = mint.UserMetadataUpdateSuccess,
+        userMetadataUpdateError = mint.UserMetadataUpdateError,
+        metadataUpdateAttempted = mint.MetadataUpdateAttempted,
+        metadataUpdateSuccess = mint.MetadataUpdateSuccess,
+        metadataUpdateError = mint.MetadataUpdateError,
         ticket = mint.Ticket,
         qrcode = mint.QrCodeDataUrl
     };
@@ -546,6 +575,44 @@ static string? TryGetQrCode(string? responseJson)
         if (doc.RootElement.TryGetProperty("qrcode", out var qrCode) && qrCode.ValueKind == JsonValueKind.String)
         {
             var value = qrCode.GetString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+    }
+    catch
+    {
+    }
+
+    return null;
+}
+
+static bool? TryGetBoolProperty(string? responseJson, string propertyName)
+{
+    if (string.IsNullOrWhiteSpace(responseJson)) return null;
+    try
+    {
+        using var doc = JsonDocument.Parse(responseJson);
+        if (doc.RootElement.TryGetProperty(propertyName, out var prop) &&
+            (prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False))
+        {
+            return prop.GetBoolean();
+        }
+    }
+    catch
+    {
+    }
+
+    return null;
+}
+
+static string? TryGetStringProperty(string? responseJson, string propertyName)
+{
+    if (string.IsNullOrWhiteSpace(responseJson)) return null;
+    try
+    {
+        using var doc = JsonDocument.Parse(responseJson);
+        if (doc.RootElement.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.String)
+        {
+            var value = prop.GetString();
             return string.IsNullOrWhiteSpace(value) ? null : value;
         }
     }
