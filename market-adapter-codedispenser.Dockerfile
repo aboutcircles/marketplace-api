@@ -24,6 +24,9 @@ RUN dotnet publish Circles.Market.Adapters.CodeDispenser/Circles.Market.Adapters
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS final
 
+# krb5-libs: Npgsql probes for GSSAPI on first PG connection; without it logs spurious ERROR
+RUN apk add --no-cache krb5-libs
+
 # Create non-root user with fixed UID 10000 (consistent across all circles services)
 RUN addgroup -S -g 10000 circles && adduser -S -u 10000 -G circles circles
 
