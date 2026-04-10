@@ -52,6 +52,10 @@ jobs:
             slug: market-adapter-odoo
             image: market-adapter-odoo
             dockerfile: ./market-adapter-odoo.Dockerfile
+          - name: Unlock Adapter
+            slug: market-adapter-unlock
+            image: market-adapter-unlock
+            dockerfile: ./market-adapter-unlock.Dockerfile
 
     steps:
       - name: Checkout Code
