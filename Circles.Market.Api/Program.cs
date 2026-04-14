@@ -259,7 +259,16 @@ if (!string.IsNullOrEmpty(authServiceUrl))
     hcBuilder.Add(new HealthCheckRegistration(
         "auth-service",
         sp => new AuthServiceHealthCheck(sp.GetRequiredService<IHttpClientFactory>(), authServiceUrl),
-        failureStatus: HealthStatus.Degraded,
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"]));
+}
+
+if (!string.IsNullOrEmpty(pinningServiceUrl))
+{
+    hcBuilder.Add(new HealthCheckRegistration(
+        "profile-pinning",
+        sp => new PinningServiceHealthCheck(sp.GetRequiredService<IHttpClientFactory>(), pinningServiceUrl),
+        failureStatus: HealthStatus.Unhealthy,
         tags: ["ready"]));
 }
 

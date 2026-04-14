@@ -4,8 +4,8 @@ namespace Circles.Market.Api.Health;
 
 /// <summary>
 /// Checks auth-service reachability via its JWKS endpoint.
-/// Uses AUTH_SERVICE_URL env var. JWKS is cached by the JWT middleware,
-/// so a transient outage is Degraded (not Unhealthy) — existing tokens still validate.
+/// Uses AUTH_SERVICE_URL env var. Unhealthy when down — new users can't authenticate
+/// and expired JWTs won't refresh.
 /// </summary>
 public class AuthServiceHealthCheck(IHttpClientFactory httpClientFactory, string authServiceUrl) : IHealthCheck
 {
@@ -22,11 +22,11 @@ public class AuthServiceHealthCheck(IHttpClientFactory httpClientFactory, string
 
             return response.IsSuccessStatusCode
                 ? HealthCheckResult.Healthy("auth-service ok")
-                : HealthCheckResult.Degraded($"auth-service returned {(int)response.StatusCode}");
+                : HealthCheckResult.Unhealthy($"auth-service returned {(int)response.StatusCode}");
         }
         catch (Exception ex)
         {
-            return HealthCheckResult.Degraded("auth-service unreachable", ex);
+            return HealthCheckResult.Unhealthy("auth-service unreachable", ex);
         }
     }
 }
