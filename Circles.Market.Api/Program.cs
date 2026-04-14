@@ -3,6 +3,7 @@ using System.Threading.RateLimiting;
 using Circles.Market.Api;
 using Circles.Market.Api.Admin;
 using Circles.Market.Api.Auth;
+using Circles.Market.Api.Health;
 using Circles.Market.Shared.Auth;
 using Circles.Market.Api.Cart;
 using Circles.Market.Api.Cart.Validation;
@@ -16,6 +17,8 @@ using Circles.Market.Shared.Admin;
 using Circles.Profiles.Interfaces;
 using Circles.Profiles.Market;
 using Circles.Profiles.Sdk;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Nethereum.Web3;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -233,6 +236,33 @@ publicBuilder.Services.AddSingleton(sp =>
 publicBuilder.Services.AddSingleton<CatalogReducer>();
 publicBuilder.Services.AddSingleton<OperatorCatalogService>();
 
+// Health checks: /health/ready verifies all critical dependencies
+var circlesRpcUrl = Environment.GetEnvironmentVariable("CIRCLES_RPC") ?? "";
+var authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "";
+
+var hcBuilder = publicBuilder.Services.AddHealthChecks()
+    .AddCheck("market-db",
+        new MarketDatabaseHealthCheck(pgConn!),
+        tags: ["ready"]);
+
+if (!string.IsNullOrEmpty(circlesRpcUrl))
+{
+    hcBuilder.Add(new HealthCheckRegistration(
+        "rpc",
+        sp => new RpcHealthCheck(sp.GetRequiredService<IHttpClientFactory>(), circlesRpcUrl),
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"]));
+}
+
+if (!string.IsNullOrEmpty(authServiceUrl))
+{
+    hcBuilder.Add(new HealthCheckRegistration(
+        "auth-service",
+        sp => new AuthServiceHealthCheck(sp.GetRequiredService<IHttpClientFactory>(), authServiceUrl),
+        failureStatus: HealthStatus.Degraded,
+        tags: ["ready"]));
+}
+
 // OpenAPI
 publicBuilder.Services.AddOpenApi();
 publicBuilder.Services.AddEndpointsApiExplorer();
@@ -346,6 +376,19 @@ publicApp.UseHttpMetrics();
 
 // Health/readiness endpoint for container orchestration
 publicApp.MapServiceApi(pgConn!);
+
+// Deep readiness: checks DB + RPC + auth-service
+publicApp.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = hc => hc.Tags.Contains("ready"),
+    AllowCachingResponses = false,
+    ResultStatusCodes =
+    {
+        [HealthStatus.Healthy] = StatusCodes.Status200OK,
+        [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable,
+        [HealthStatus.Degraded] = StatusCodes.Status200OK
+    }
+});
 
 publicApp.MapCartApi();
 publicApp.MapAuthProxy("/api/auth");
