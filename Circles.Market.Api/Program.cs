@@ -263,14 +263,11 @@ if (!string.IsNullOrEmpty(authServiceUrl))
         tags: ["ready"]));
 }
 
-if (!string.IsNullOrEmpty(pinningServiceUrl))
-{
-    hcBuilder.Add(new HealthCheckRegistration(
-        "profile-pinning",
-        sp => new PinningServiceHealthCheck(sp.GetRequiredService<IHttpClientFactory>(), pinningServiceUrl),
-        failureStatus: HealthStatus.Unhealthy,
-        tags: ["ready"]));
-}
+hcBuilder.Add(new HealthCheckRegistration(
+    "profile-pinning",
+    sp => new PinningServiceHealthCheck(sp.GetRequiredService<IHttpClientFactory>(), pinningServiceUrl),
+    failureStatus: HealthStatus.Unhealthy,
+    tags: ["ready"]));
 
 // OpenAPI
 publicBuilder.Services.AddOpenApi();
