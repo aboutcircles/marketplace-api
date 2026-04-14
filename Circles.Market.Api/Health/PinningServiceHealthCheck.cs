@@ -18,7 +18,7 @@ public class PinningServiceHealthCheck(IHttpClientFactory httpClientFactory, str
         {
             var client = httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(5);
-            var response = await client.GetAsync(_readyUrl, ct);
+            using var response = await client.GetAsync(_readyUrl, ct);
 
             return response.IsSuccessStatusCode
                 ? HealthCheckResult.Healthy("profile-pinning ok")

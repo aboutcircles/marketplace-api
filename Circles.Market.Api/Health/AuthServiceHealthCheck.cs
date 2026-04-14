@@ -18,7 +18,7 @@ public class AuthServiceHealthCheck(IHttpClientFactory httpClientFactory, string
         {
             var client = httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(5);
-            var response = await client.GetAsync(_jwksUrl, ct);
+            using var response = await client.GetAsync(_jwksUrl, ct);
 
             return response.IsSuccessStatusCode
                 ? HealthCheckResult.Healthy("auth-service ok")
