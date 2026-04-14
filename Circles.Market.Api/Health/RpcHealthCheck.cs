@@ -17,7 +17,7 @@ public class RpcHealthCheck(IHttpClientFactory httpClientFactory, string rpcBase
         {
             var client = httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(5);
-            var response = await client.GetAsync(_readyUrl, ct);
+            using var response = await client.GetAsync(_readyUrl, ct);
 
             return response.IsSuccessStatusCode
                 ? HealthCheckResult.Healthy("rpc ready")
