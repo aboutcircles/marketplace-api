@@ -29,6 +29,7 @@
       <ProjectReference Include="..\Circles.Market.Adapters.CodeDispenser\Circles.Market.Adapters.CodeDispenser.csproj" />
       <ProjectReference Include="..\Circles.Market.Adapters.Odoo\Circles.Market.Adapters.Odoo.csproj" />
       <ProjectReference Include="..\Circles.Market.Adapters.Unlock\Circles.Market.Adapters.Unlock.csproj" />
+      <ProjectReference Include="..\Circles.Market.Adapters.WooCommerce\Circles.Market.Adapters.WooCommerce.csproj" />
       <ProjectReference Include="..\Circles.Market.Api\Circles.Market.Api.csproj" />
       <ProjectReference Include="..\Circles.Market.Shared\Circles.Market.Shared.csproj" />
     </ItemGroup>

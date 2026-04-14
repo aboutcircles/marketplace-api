@@ -23,6 +23,7 @@ bld/
 .vs/
 # Uncomment if you use Visual Studio Code
 #.vscode/
+.context/
 
 # MSTest test Results
 [Tt]est[Rr]esult*/
