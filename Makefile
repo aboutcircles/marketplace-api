@@ -39,6 +39,29 @@ build: ## Build solution
 test: ## Run all tests
 	dotnet test $(SLN) -c Release --no-build --verbosity normal
 
+# ─── WooCommerce (optional, layered with WordPress infra) ───────────────��───
+
+WC_COMPOSE := docker compose --project-directory deployment \
+  -f deployment/docker-compose.dev.yml \
+  -f deployment/docker-compose.woocommerce.yml
+
+.PHONY: up-wc down-wc logs-wc test-wc psql-wc
+
+up-wc: ## Start dev stack + WooCommerce store
+	$(WC_COMPOSE) up -d --build
+
+down-wc: ## Stop dev stack + WooCommerce store
+	$(WC_COMPOSE) down
+
+logs-wc: ## Tail WooCommerce-related container logs
+	$(WC_COMPOSE) logs -f --tail=100 market-adapter-woocommerce wc-wordpress wc-setup wc-mariadb
+
+test-wc: ## Run WooCommerce integration tests
+	scripts/test-woocommerce.sh
+
+psql-wc: ## Open psql shell for WooCommerce adapter DB
+	scripts/psql.sh woocommerce
+
 # ─── Database ────────────────────────────────────────────────────────────────
 
 .PHONY: psql-market psql-codedisp psql-odoo
