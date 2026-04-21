@@ -352,7 +352,7 @@ public static class AdminEndpoints
             {
                 var products = await client.ListProductsAsync(
                     string.IsNullOrWhiteSpace(skuFilter) ? null : skuFilter.ToString(),
-                    limit, ct);
+                    limit, offset, ct);
 
                 return Results.Json(new
                 {

@@ -78,13 +78,13 @@ public sealed class PostgresInventoryStockStore : IInventoryStockStore
         await using var conn = new NpgsqlConnection(_connString);
         await conn.OpenAsync(ct);
 
-        // Only decrement if stock is finite (-1 = unlimited) and sufficient
+        // Succeed for unlimited stock (-1) without decrementing; otherwise decrement if sufficient
         const string sql = """
             UPDATE wc_inventory_stock
-            SET stock_quantity = stock_quantity - @qty, updated_at = now()
+            SET stock_quantity = CASE WHEN stock_quantity = -1 THEN -1 ELSE stock_quantity - @qty END,
+                updated_at = now()
             WHERE chain_id = @c AND seller_address = @s AND sku = @sku
-              AND stock_quantity >= 0
-              AND stock_quantity >= @qty
+              AND (stock_quantity = -1 OR (stock_quantity >= 0 AND stock_quantity >= @qty))
             RETURNING id;
             """;
 

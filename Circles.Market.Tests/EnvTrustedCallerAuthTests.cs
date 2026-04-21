@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Circles.Market.Tests;
 
+[NonParallelizable]
 public class EnvTrustedCallerAuthTests
 {
     private const string EnvVar = "CIRCLES_SERVICE_KEY";

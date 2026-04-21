@@ -26,8 +26,8 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
     private readonly string _connString;
     private readonly ILogger<PostgresWooCommerceFulfillmentRunStore> _log;
 
-    private static string Norm(string s) => string.IsNullOrWhiteSpace(s) ? throw new ArgumentException("required", s) : s.Trim().ToLowerInvariant();
-    private static string NormRef(string s) => string.IsNullOrWhiteSpace(s) ? throw new ArgumentException("required", s) : s.Trim();
+    private static string Norm(string s) => string.IsNullOrWhiteSpace(s) ? throw new ArgumentException("Value cannot be null or whitespace.", nameof(s)) : s.Trim().ToLowerInvariant();
+    private static string NormRef(string s) => string.IsNullOrWhiteSpace(s) ? throw new ArgumentException("Value cannot be null or whitespace.", nameof(s)) : s.Trim();
 
     public PostgresWooCommerceFulfillmentRunStore(string connString, ILogger<PostgresWooCommerceFulfillmentRunStore> log)
     {
@@ -97,8 +97,29 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
         cmd.Parameters.AddWithValue("@key", idempotencyKey);
         cmd.Parameters.AddWithValue("@payload", requestPayload);
 
-        var result = await cmd.ExecuteScalarAsync(ct);
-        return (Guid)result!;
+        try
+        {
+            var result = await cmd.ExecuteScalarAsync(ct);
+            return (Guid)result!;
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23505")
+        {
+            // Hit the unique constraint on (chain_id, seller_address, payment_reference).
+            // This means a run already exists for this payment — look it up and return its ID.
+            _log.LogInformation("Fulfillment run already exists for payment_reference={PaymentRef}, returning existing run", paymentNorm);
+            const string lookupSql = """
+                SELECT id FROM wc_fulfillment_runs
+                WHERE chain_id = @c AND seller_address = @s AND payment_reference = @p
+                LIMIT 1;
+                """;
+            await using var lookupCmd = conn.CreateCommand();
+            lookupCmd.CommandText = lookupSql;
+            lookupCmd.Parameters.AddWithValue("@c", chainId);
+            lookupCmd.Parameters.AddWithValue("@s", sellerNorm);
+            lookupCmd.Parameters.AddWithValue("@p", paymentNorm);
+            var existing = await lookupCmd.ExecuteScalarAsync(ct);
+            return (Guid)existing!;
+        }
     }
 
     public async Task<WooCommerceFulfillmentRunRecord?> GetByIdempotencyKeyAsync(Guid key, CancellationToken ct)

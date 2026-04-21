@@ -46,10 +46,10 @@ public sealed class WooCommerceClient : IDisposable
     {
         try
         {
-            var response = await _http.GetAsync($"products?sku={Uri.EscapeDataString(sku)}", ct);
+            using var response = await _http.GetAsync($"products?sku={Uri.EscapeDataString(sku)}", ct);
             return await ParseProductResponseAsync(response, ct);
         }
-        catch (TaskCanceledException) when (_http.Timeout != Timeout.InfiniteTimeSpan)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             _log.LogError("Timeout fetching product by SKU={Sku} from {BaseUrl}", sku, _settings.BaseUrl);
             throw new WooCommerceApiException("wc_api_timeout", $"Request timed out after {_settings.TimeoutMs}ms");
@@ -66,7 +66,7 @@ public sealed class WooCommerceClient : IDisposable
     {
         try
         {
-            var response = await _http.GetAsync($"products/{productId}", ct);
+            using var response = await _http.GetAsync($"products/{productId}", ct);
             if (!response.IsSuccessStatusCode)
             {
                 var (code, msg) = await ReadErrorAsync(response, ct);
@@ -81,7 +81,7 @@ public sealed class WooCommerceClient : IDisposable
             var json = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<WcProductDto>(json, JsonOptions);
         }
-        catch (TaskCanceledException) when (_http.Timeout != Timeout.InfiniteTimeSpan)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             _log.LogError("Timeout fetching product {Id}", productId);
             throw new WooCommerceApiException("wc_api_timeout", $"Request timed out after {_settings.TimeoutMs}ms");
@@ -95,17 +95,18 @@ public sealed class WooCommerceClient : IDisposable
     }
 
     /// <summary>Lists products with optional SKU filter (admin proxy endpoint).</summary>
-    public async Task<List<WcProductDto>> ListProductsAsync(string? sku = null, int perPage = 100, CancellationToken ct = default)
+    public async Task<List<WcProductDto>> ListProductsAsync(string? sku = null, int perPage = 100, int offset = 0, CancellationToken ct = default)
     {
         try
         {
-            var url = $"products?per_page={perPage}";
+            int page = offset > 0 ? (offset / perPage) + 1 : 1;
+            var url = $"products?per_page={perPage}&page={page}";
             if (!string.IsNullOrWhiteSpace(sku))
             {
                 url += $"&sku={Uri.EscapeDataString(sku)}";
             }
 
-            var response = await _http.GetAsync(url, ct);
+            using var response = await _http.GetAsync(url, ct);
             if (!response.IsSuccessStatusCode)
             {
                 var (code, msg) = await ReadErrorAsync(response, ct);
@@ -115,7 +116,7 @@ public sealed class WooCommerceClient : IDisposable
             var json = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<List<WcProductDto>>(json, JsonOptions) ?? new();
         }
-        catch (TaskCanceledException) when (_http.Timeout != Timeout.InfiniteTimeSpan)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new WooCommerceApiException("wc_api_timeout", "Request timed out");
         }
@@ -137,7 +138,7 @@ public sealed class WooCommerceClient : IDisposable
             var json = JsonSerializer.Serialize(request, JsonOptions);
             using var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = await _http.PostAsync("orders", content, ct);
+            using var response = await _http.PostAsync("orders", content, ct);
 
             if (response.StatusCode == HttpStatusCode.UnprocessableEntity)
             {
@@ -166,7 +167,7 @@ public sealed class WooCommerceClient : IDisposable
                 order.Id, order.Number, order.Status);
             return order;
         }
-        catch (TaskCanceledException) when (_http.Timeout != Timeout.InfiniteTimeSpan)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             _log.LogError("Timeout creating WooCommerce order");
             throw new WooCommerceApiException("wc_api_timeout", "Order creation timed out");
@@ -184,7 +185,7 @@ public sealed class WooCommerceClient : IDisposable
     {
         try
         {
-            var response = await _http.GetAsync($"orders/{orderId}", ct);
+            using var response = await _http.GetAsync($"orders/{orderId}", ct);
             if (!response.IsSuccessStatusCode)
             {
                 var (code, msg) = await ReadErrorAsync(response, ct);
@@ -194,7 +195,7 @@ public sealed class WooCommerceClient : IDisposable
             var json = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<WcOrderDto>(json, JsonOptions);
         }
-        catch (TaskCanceledException) when (_http.Timeout != Timeout.InfiniteTimeSpan)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new WooCommerceApiException("wc_api_timeout", "Request timed out");
         }
@@ -216,7 +217,7 @@ public sealed class WooCommerceClient : IDisposable
         try
         {
             // Try to find existing customer by email
-            var searchResponse = await _http.GetAsync(
+            using var searchResponse = await _http.GetAsync(
                 $"customers?email={Uri.EscapeDataString(email)}&per_page=1", ct);
 
             if (searchResponse.IsSuccessStatusCode)
@@ -243,25 +244,29 @@ public sealed class WooCommerceClient : IDisposable
             var json = JsonSerializer.Serialize(createRequest, JsonOptions);
             using var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = await _http.PostAsync("customers", content, ct);
+            using var response = await _http.PostAsync("customers", content, ct);
             if (!response.IsSuccessStatusCode)
             {
                 var (code, msg) = await ReadErrorAsync(response, ct);
                 _log.LogWarning("Failed to create WC customer: {Code} {Message}. Using default.", code, msg);
-                // Fall back to default customer if configured
                 if (_settings.DefaultCustomerId.HasValue)
-                {
                     return _settings.DefaultCustomerId.Value;
-                }
                 throw new WooCommerceApiException(code, msg);
             }
 
             var createdBody = await response.Content.ReadAsStringAsync(ct);
             var created = JsonSerializer.Deserialize<WcCustomerDto>(createdBody, JsonOptions);
-            _log.LogInformation("Created new WC customer {Id} for email {Email}", created?.Id, email);
-            return created?.Id ?? 0;
+            if (created == null || created.Id == 0)
+            {
+                _log.LogWarning("WC customer creation succeeded but response was empty/invalid. Using default.");
+                if (_settings.DefaultCustomerId.HasValue)
+                    return _settings.DefaultCustomerId.Value;
+                throw new WooCommerceApiException("wc_api_null_response", "Customer creation returned null/zero id");
+            }
+            _log.LogInformation("Created new WC customer {Id} for email {Email}", created.Id, email);
+            return created.Id;
         }
-        catch (TaskCanceledException) when (_http.Timeout != Timeout.InfiniteTimeSpan)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new WooCommerceApiException("wc_api_timeout", "Customer lookup/creation timed out");
         }

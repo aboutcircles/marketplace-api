@@ -74,7 +74,7 @@ public class WcProductCategoryDto
     public string? Slug { get; set; }
 }
 
-/// <summary>WooCommerce order line item payload.</summary>
+/// <summary>WooCommerce order line item in the response payload.</summary>
 public class WcLineItemDto
 {
     [JsonPropertyName("product_id")]
@@ -83,9 +83,9 @@ public class WcLineItemDto
     [JsonPropertyName("quantity")]
     public int Quantity { get; set; }
 
-    /// <summary>Override price per unit (optional — WC uses product price if omitted).</summary>
+    /// <summary>Price per unit — WC returns this as a number in responses.</summary>
     [JsonPropertyName("price")]
-    public string? Price { get; set; }
+    public decimal? Price { get; set; }
 }
 
 /// <summary>Address block used for both billing and shipping in WooCommerce orders.</summary>
@@ -145,7 +145,7 @@ public class WcCreateOrderRequest
 
     /// <summary>Free-text order note (e.g. payment reference).</summary>
     [JsonPropertyName("customer_note")]
-    public bool CustomerNote { get; set; }
+    public string? CustomerNote { get; set; }
 
     /// <summary>Metadata key-value pairs, e.g. "payment_reference".</summary>
     [JsonPropertyName("meta_data")]

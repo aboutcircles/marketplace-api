@@ -181,7 +181,7 @@ publicApp.MapGet("/inventory/{chainId}/{seller}/{sku}", async (
     var localQty = await stockStore.GetAvailableQtyAsync(chainId, seller, sku, ct);
     if (localQty.HasValue)
     {
-        long value = localQty.Value < 0 ? 0 : localQty.Value;
+        long value = localQty.Value == -1 ? int.MaxValue : Math.Max(0, localQty.Value);
         return Results.Json(new Dictionary<string, object?> { ["@type"] = "QuantitativeValue", ["value"] = value, ["unitCode"] = "C62" });
     }
 
@@ -232,7 +232,7 @@ publicApp.MapGet("/availability/{chainId}/{seller}/{sku}", async (
     var localQty = await stockStore.GetAvailableQtyAsync(chainId, seller, sku, ct);
     if (localQty.HasValue)
     {
-        string availability = localQty.Value > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock";
+        string availability = (localQty.Value > 0 || localQty.Value == -1) ? "https://schema.org/InStock" : "https://schema.org/OutOfStock";
         return Results.Json(availability);
     }
 
@@ -317,8 +317,49 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         return Results.Json(new { error = "Internal error", details = "Failed to create run record" }, statusCode: 500);
     }
 
-    // Check if already fulfilled
+    // Check if already fulfilled — first by idempotency key, then by payment reference
+    // (covers both explicit idempotency keys and replays with new keys but same payment_reference)
     var existing = await runStore.GetByIdempotencyKeyAsync(idempotencyKey, ct);
+    if (existing == null || existing.Id == runId)
+    {
+        // No match by idempotency key, or the insert returned the same ID (new run).
+        // Check by payment reference in case a prior run with a different key exists.
+        string? priorStatus = await runStore.GetStatusAsync(chainId, sellerLower, req.PaymentReference, ct);
+        if (priorStatus == "completed")
+        {
+            // Look up the full record for the response
+            await using var conn = new NpgsqlConnection(connString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT wc_order_id, wc_order_number FROM wc_fulfillment_runs
+                WHERE chain_id = @c AND seller_address = @s AND payment_reference = @p AND status = 'completed'
+                LIMIT 1;
+                """;
+            cmd.Parameters.AddWithValue("@c", chainId);
+            cmd.Parameters.AddWithValue("@s", sellerLower);
+            cmd.Parameters.AddWithValue("@p", req.PaymentReference);
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            int? wcOrderId = null;
+            string? wcOrderNumber = null;
+            if (await reader.ReadAsync(ct))
+            {
+                wcOrderId = reader.IsDBNull(0) ? null : reader.GetInt32(0);
+                wcOrderNumber = reader.IsDBNull(1) ? null : reader.GetString(1);
+            }
+            return Results.Json(new Dictionary<string, object?>
+            {
+                ["@type"] = "circles:WooCommerceFulfillmentResult",
+                ["status"] = "ok",
+                ["orderId"] = req.OrderId,
+                ["paymentReference"] = req.PaymentReference,
+                ["seller"] = sellerLower,
+                ["message"] = "Already fulfilled",
+                ["wcOrderId"] = wcOrderId,
+                ["wcOrderNumber"] = wcOrderNumber
+            });
+        }
+    }
     if (existing != null && existing.Status == "completed")
     {
         return Results.Json(new Dictionary<string, object?>
@@ -343,10 +384,6 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     }
 
     var inheritAbort = wcInfo!.InheritRequestAbort;
-
-    using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
-    setupCts.CancelAfter(TimeSpan.FromSeconds(30));
-    var setupCt = setupCts.Token;
 
     using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(wcInfo.TimeoutMs));
     using var linkedCts = inheritAbort
@@ -397,7 +434,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
             {
                 // Rollback
                 foreach (var d in decrementedStock)
-                    await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, jobCt);
+                    await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, CancellationToken.None);
 
                 await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, $"Insufficient local stock for {item.Sku}", ct);
                 return Results.Json(new Dictionary<string, object?>
@@ -479,7 +516,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     catch (WooCommerceApiException ex) when (ex.IsValidationError)
     {
         foreach (var d in decrementedStock)
-            await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, jobCt);
+            await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, CancellationToken.None);
 
         await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, ex.Message, ct);
         return Results.Json(new Dictionary<string, object?>
@@ -497,7 +534,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     {
         foreach (var d in decrementedStock)
         {
-            try { await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, jobCt); }
+            try { await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, CancellationToken.None); }
             catch (Exception rollbackEx)
             {
                 log.LogError(rollbackEx, "Failed to rollback local stock for sku={Sku}", d.Sku);

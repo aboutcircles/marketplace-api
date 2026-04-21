@@ -90,10 +90,9 @@ public sealed class WooCommerceDbBootstrapper
                     PRIMARY KEY (id)
                 );
 
-                CREATE UNIQUE INDEX IF NOT EXISTS ix_wc_fulfillment_runs_idempotency
-                    ON wc_fulfillment_runs(idempotency_key);
+                -- idempotency_key UNIQUE constraint is implicit from column definition
 
-                CREATE INDEX IF NOT EXISTS ix_wc_fulfillment_runs_lookup
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_wc_fulfillment_runs_lookup
                     ON wc_fulfillment_runs(chain_id, seller_address, payment_reference);
 
                 -- 4. wc_inventory_stock: local stock overrides
