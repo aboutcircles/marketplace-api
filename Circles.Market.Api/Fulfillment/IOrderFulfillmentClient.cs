@@ -76,17 +76,19 @@ public sealed class HttpOrderFulfillmentClient : IOrderFulfillmentClient
             quantity = i.OrderQuantity
         }).ToArray();
 
-        var payload = new
+        var payload = new Dictionary<string, object?>
         {
-            orderId,
-            paymentReference,
-            buyer = ExtractBuyerAddress(order.Customer?.Id),
-            customer = BuildCustomerPayload(order.Customer),
-            shippingAddress = BuildAddressPayload(order.ShippingAddress),
-            billingAddress = BuildAddressPayload(order.BillingAddress),
-            contactPoint = BuildContactPointPayload(order.SellerContact),
-            items,
-            trigger
+            ["orderId"] = orderId,
+            ["paymentReference"] = paymentReference,
+            ["buyer"] = ExtractBuyerAddress(order.Customer?.Id),
+            ["customer"] = BuildCustomerPayload(order.Customer),
+            ["shippingAddress"] = BuildAddressPayload(order.ShippingAddress),
+            ["billingAddress"] = BuildAddressPayload(order.BillingAddress),
+            ["contactPoint"] = BuildContactPointPayload(order.SellerContact),
+            ["items"] = items,
+            ["trigger"] = trigger,
+            ["amountWei"] = order.PaidAmountWei,
+            ["paymentTimestamp"] = order.PaidAt,
         };
 
         var jsonContent = System.Text.Json.JsonSerializer.Serialize(payload, Circles.Profiles.Models.JsonSerializerOptions.JsonLd);

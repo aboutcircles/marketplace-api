@@ -469,8 +469,8 @@ ON CONFLICT DO NOTHING;";
         using var conn = new NpgsqlConnection(_connString);
         conn.Open();
         using var cmd = conn.CreateCommand();
-        // Read snapshot JSON plus DB-created timestamp and the latest live status
-        cmd.CommandText = "SELECT order_json, created_at, status FROM orders WHERE order_id=@id";
+        // Read snapshot JSON plus DB-created timestamp, live status, and payment metadata
+        cmd.CommandText = "SELECT order_json, created_at, status, paid_amount_wei, paid_at FROM orders WHERE order_id=@id";
         cmd.Parameters.AddWithValue("@id", orderId);
         using var reader = cmd.ExecuteReader();
         if (!reader.Read()) return null;
@@ -503,6 +503,23 @@ ON CONFLICT DO NOTHING;";
         {
             // If anything goes wrong reading status, leave the value from JSON as-is
         }
+        try
+        {
+            if (!reader.IsDBNull(3))
+            {
+                order.PaidAmountWei = reader.GetValue(3)?.ToString();
+            }
+        }
+        catch { }
+        try
+        {
+            if (!reader.IsDBNull(4))
+            {
+                var paidAt = reader.GetFieldValue<DateTimeOffset>(4);
+                order.PaidAt = paidAt.ToUniversalTime().ToString("O");
+            }
+        }
+        catch { }
         if (includeOutbox)
         {
             try
