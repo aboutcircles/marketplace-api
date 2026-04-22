@@ -56,6 +56,10 @@ jobs:
             slug: market-adapter-unlock
             image: market-adapter-unlock
             dockerfile: ./market-adapter-unlock.Dockerfile
+          - name: WooCommerce Adapter
+            slug: market-adapter-woocommerce
+            image: market-adapter-woocommerce
+            dockerfile: ./market-adapter-woocommerce.Dockerfile
 
     steps:
       - name: Checkout Code

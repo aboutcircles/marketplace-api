@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Circles.Profiles.Aggregation" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Interfaces" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Market" Version="1.0.2" />
+    <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.2" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.2" />
+    <PackageReference Include="Npgsql" Version="10.0.1" />
+    <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.15.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Update="appsettings.json">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+    <Content Update="appsettings.Development.json">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Circles.Market.Auth.Siwe\Circles.Market.Auth.Siwe.csproj" />
+    <ProjectReference Include="..\Circles.Market.Shared\Circles.Market.Shared.csproj" />
+    <ProjectReference Include="..\Circles.Market.Fulfillment.Core\Circles.Market.Fulfillment.Core.csproj" />
+  </ItemGroup>
+</Project>

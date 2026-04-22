@@ -1,0 +1,90 @@
+# WordPress + WooCommerce infrastructure for integration testing.
+# Layer on top of the dev stack:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.woocommerce.yml up -d --build
+#
+# The WC adapter (market-adapter-woocommerce) lives in docker-compose.dev.yml
+# because it uses the shared PostgreSQL instance.  This file only adds the
+# WordPress store that the adapter talks to.
+
+services:
+  wc-mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${WC_MARIADB_ROOT_PASSWORD:-rootpass}
+      MARIADB_DATABASE: ${WC_MARIADB_DATABASE:-wordpress}
+      MARIADB_USER: ${WC_MARIADB_USER:-wpuser}
+      MARIADB_PASSWORD: ${WC_MARIADB_PASSWORD:-wppass}
+    volumes:
+      - wc-mariadb-data:/var/lib/mysql
+    ports:
+      - "${MARIADB_PORT:-65013}:3306"
+    networks:
+      - public
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  wc-wordpress:
+    image: wordpress:6-apache
+    restart: unless-stopped
+    environment:
+      WORDPRESS_DB_HOST: wc-mariadb:3306
+      WORDPRESS_DB_NAME: ${WC_MARIADB_DATABASE:-wordpress}
+      WORDPRESS_DB_USER: ${WC_MARIADB_USER:-wpuser}
+      WORDPRESS_DB_PASSWORD: ${WC_MARIADB_PASSWORD:-wppass}
+      WORDPRESS_TABLE_PREFIX: wp_
+    volumes:
+      - wc-wordpress-data:/var/www/html
+    ports:
+      - "${WORDPRESS_PORT:-65012}:80"
+    networks:
+      - public
+    depends_on:
+      wc-mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/wp-login.php || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  wc-setup:
+    image: wordpress:cli-2.10
+    depends_on:
+      wc-wordpress:
+        condition: service_healthy
+    user: "33:33"
+    volumes:
+      - wc-wordpress-data:/var/www/html
+      - ./scripts/wc-setup.sh:/scripts/wc-setup.sh:ro
+    environment:
+      WORDPRESS_DB_HOST: wc-mariadb:3306
+      WORDPRESS_DB_NAME: ${WC_MARIADB_DATABASE:-wordpress}
+      WORDPRESS_DB_USER: ${WC_MARIADB_USER:-wpuser}
+      WORDPRESS_DB_PASSWORD: ${WC_MARIADB_PASSWORD:-wppass}
+      WC_ADMIN_USER: ${WC_ADMIN_USER:-admin}
+      WC_ADMIN_PASSWORD: ${WC_ADMIN_PASSWORD:-admin123}
+      WC_ADMIN_EMAIL: ${WC_ADMIN_EMAIL:-admin@localhost.test}
+      WC_SITE_URL: http://wc-wordpress
+    entrypoint: ["sh", "/scripts/wc-setup.sh"]
+    networks:
+      - public
+    restart: "no"
+
+volumes:
+  wc-mariadb-data: {}
+  wc-wordpress-data: {}

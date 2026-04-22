@@ -26,9 +26,10 @@ die() {
 USAGE="<db_alias> [psql_args...]
 
 Aliases:
-  market    -> ${DB_MARKET_API:-circles_market_api}
-  codedisp  -> ${DB_CODEDISP:-circles_codedisp}
-  odoo      -> ${DB_ODOO:-circles_odoo}
+  market      -> ${DB_MARKET_API:-circles_market_api}
+  codedisp    -> ${DB_CODEDISP:-circles_codedisp}
+  odoo        -> ${DB_ODOO:-circles_odoo}
+  woocommerce -> ${DB_WOOCOMMERCE:-circles_woocommerce}
 
 Example:
   $0 odoo -c 'SELECT * FROM odoo_connections;'"
@@ -55,8 +56,11 @@ case "$DB_ALIAS" in
   odoo)
     DB_NAME="${DB_ODOO:-circles_odoo}"
     ;;
+  woocommerce)
+    DB_NAME="${DB_WOOCOMMERCE:-circles_woocommerce}"
+    ;;
   *)
-    die "Unknown database alias: $DB_ALIAS. Use 'market', 'codedisp', or 'odoo'."
+    die "Unknown database alias: $DB_ALIAS. Use 'market', 'codedisp', 'odoo', or 'woocommerce'."
     ;;
 esac
 
