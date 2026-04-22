@@ -99,6 +99,13 @@ VALUES
     NULL,
     'http://market-adapter-unlock:{MARKET_UNLOCK_ADAPTER_PORT}/fulfill/{chain_id}/{seller}',
     true
+  ),
+  (
+    'woocommerce',
+    'http://market-adapter-woocommerce:{MARKET_WOOCOMMERCE_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku}',
+    'http://market-adapter-woocommerce:{MARKET_WOOCOMMERCE_ADAPTER_PORT}/availability/{chain_id}/{seller}/{sku}',
+    'http://market-adapter-woocommerce:{MARKET_WOOCOMMERCE_ADAPTER_PORT}/fulfill/{chain_id}/{seller}',
+    true
   )
 ON CONFLICT (offer_type) DO NOTHING;
 ";
