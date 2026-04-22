@@ -79,7 +79,9 @@ services:
       WC_ADMIN_USER: ${WC_ADMIN_USER:-admin}
       WC_ADMIN_PASSWORD: ${WC_ADMIN_PASSWORD:-admin123}
       WC_ADMIN_EMAIL: ${WC_ADMIN_EMAIL:-admin@localhost.test}
-      WC_SITE_URL: http://wc-wordpress
+      WC_SITE_URL: ${WC_SITE_URL:-http://wc-wordpress}
+      WC_CONSUMER_KEY: ${WC_CONSUMER_KEY:-}
+      WC_CONSUMER_SECRET: ${WC_CONSUMER_SECRET:-}
     entrypoint: ["sh", "/scripts/wc-setup.sh"]
     networks:
       - public

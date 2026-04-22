@@ -28,6 +28,10 @@ else
   echo "[wc-setup] WordPress already installed."
 fi
 
+# Ensure site URL matches current config (handles migration from internal URL)
+$WP option update siteurl "${WC_SITE_URL:-http://wc-wordpress}" 2>/dev/null || true
+$WP option update home "${WC_SITE_URL:-http://wc-wordpress}" 2>/dev/null || true
+
 echo "[wc-setup] Setting permalink structure (required for REST API)..."
 $WP rewrite structure '/%postname%/' --hard 2>/dev/null || true
 
@@ -74,32 +78,47 @@ $WP wc tool run install_pages --user=1 2>/dev/null || true
 
 # ── REST API keys ────────────────────────────────────────────────────────────
 
-# Generate deterministic-ish keys (safe for local testing)
-CONSUMER_KEY="ck_test_$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 32)"
-CONSUMER_SECRET="cs_test_$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 32)"
+# Use vault-provided keys if available, otherwise generate random ones (local dev)
+if [ -n "${WC_CONSUMER_KEY:-}" ] && [ -n "${WC_CONSUMER_SECRET:-}" ]; then
+  CONSUMER_KEY="$WC_CONSUMER_KEY"
+  CONSUMER_SECRET="$WC_CONSUMER_SECRET"
+  echo "[wc-setup] Using provided API keys"
+else
+  CONSUMER_KEY="ck_test_$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 32)"
+  CONSUMER_SECRET="cs_test_$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 32)"
+  echo "[wc-setup] Generated random API keys (local dev mode)"
+fi
 
 echo "[wc-setup] Creating WooCommerce REST API keys..."
 
-# Write PHP to temp files — avoids shell quoting issues with ash/dash
+# Export so PHP can read via getenv() — avoids shell→PHP interpolation injection
+export CONSUMER_KEY CONSUMER_SECRET
+
 KEYS_PHP="/tmp/wc-create-keys.php"
-cat > "$KEYS_PHP" <<KEYSPHP
+cat > "$KEYS_PHP" <<'KEYSPHP'
 <?php
-global \$wpdb;
-\$wpdb->query("DELETE FROM {\$wpdb->prefix}woocommerce_api_keys WHERE description = 'Circles Integration Test'");
-\$wpdb->insert(
-    \$wpdb->prefix . 'woocommerce_api_keys',
+$ck = getenv('CONSUMER_KEY');
+$cs = getenv('CONSUMER_SECRET');
+if (!$ck || !$cs) {
+    fwrite(STDERR, 'CONSUMER_KEY or CONSUMER_SECRET not set' . PHP_EOL);
+    exit(1);
+}
+global $wpdb;
+$wpdb->query("DELETE FROM {$wpdb->prefix}woocommerce_api_keys WHERE description = 'Circles Integration Test'");
+$wpdb->insert(
+    $wpdb->prefix . 'woocommerce_api_keys',
     array(
         'user_id'         => 1,
         'description'     => 'Circles Integration Test',
         'permissions'     => 'read_write',
-        'consumer_key'    => wc_api_hash( '${CONSUMER_KEY}' ),
-        'consumer_secret' => '${CONSUMER_SECRET}',
-        'truncated_key'   => substr( '${CONSUMER_KEY}', -7 ),
+        'consumer_key'    => wc_api_hash( $ck ),
+        'consumer_secret' => $cs,
+        'truncated_key'   => substr( $ck, -7 ),
     ),
     array( '%d', '%s', '%s', '%s', '%s', '%s' )
 );
-if ( \$wpdb->last_error ) {
-    fwrite( STDERR, 'DB error: ' . \$wpdb->last_error . PHP_EOL );
+if ( $wpdb->last_error ) {
+    fwrite( STDERR, 'DB error: ' . $wpdb->last_error . PHP_EOL );
     exit(1);
 }
 echo 'API key created';
@@ -135,7 +154,9 @@ $WP eval-file "$SEED_PHP"
 
 # ── Write credentials for test scripts ───────────────────────────────────────
 
-cat > /var/www/html/wc-test-credentials.json <<CREDS
+# Only write credentials file in local dev mode (no vault-provided keys)
+if [ -z "${WC_CONSUMER_KEY:-}" ]; then
+  cat > /var/www/html/wc-test-credentials.json <<CREDS
 {
   "consumer_key": "${CONSUMER_KEY}",
   "consumer_secret": "${CONSUMER_SECRET}",
@@ -143,11 +164,17 @@ cat > /var/www/html/wc-test-credentials.json <<CREDS
   "test_product_sku": "circles-test-tshirt"
 }
 CREDS
+  echo "[wc-setup] Credentials:     /var/www/html/wc-test-credentials.json"
+fi
 
 echo ""
 echo "[wc-setup] ── Setup complete ───────────────────────────────"
-echo "[wc-setup] Consumer Key:    ${CONSUMER_KEY}"
-echo "[wc-setup] Consumer Secret: ${CONSUMER_SECRET}"
+if [ -n "${WC_CONSUMER_KEY:-}" ]; then
+  echo "[wc-setup] Consumer Key:    ${CONSUMER_KEY%${CONSUMER_KEY#????}}****"
+  echo "[wc-setup] Consumer Secret: ****"
+else
+  echo "[wc-setup] Consumer Key:    ${CONSUMER_KEY}"
+  echo "[wc-setup] Consumer Secret: ${CONSUMER_SECRET}"
+fi
 echo "[wc-setup] Site URL:        ${WC_SITE_URL:-http://wc-wordpress}"
 echo "[wc-setup] Test SKU:        circles-test-tshirt"
-echo "[wc-setup] Credentials:     /var/www/html/wc-test-credentials.json"
