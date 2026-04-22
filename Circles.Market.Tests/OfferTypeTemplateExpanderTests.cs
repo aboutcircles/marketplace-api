@@ -32,6 +32,18 @@ public class OfferTypeTemplateExpanderTests
 
         Assert.That(unlockOk, Is.True, unlockErr);
         Assert.That(unlockExpanded, Is.EqualTo("http://market-adapter-unlock:65008/inventory/100/0xfb406c131101f94182ce69ddd8eb139e172c96dd/bp1523909"));
+
+        Environment.SetEnvironmentVariable("MARKET_WOOCOMMERCE_ADAPTER_PORT", "65010");
+        var wcOk = OfferTypeTemplateExpander.TryExpand(
+            "http://market-adapter-woocommerce:{MARKET_WOOCOMMERCE_ADAPTER_PORT}/fulfill/{chain_id}/{seller}",
+            100,
+            "0xFB406c131101F94182CE69dDd8EB139E172c96Dd",
+            "test-sku",
+            out var wcExpanded,
+            out var wcErr);
+
+        Assert.That(wcOk, Is.True, wcErr);
+        Assert.That(wcExpanded, Is.EqualTo("http://market-adapter-woocommerce:65010/fulfill/100/0xfb406c131101f94182ce69ddd8eb139e172c96dd"));
     }
 
     [Test]
