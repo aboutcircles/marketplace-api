@@ -26,20 +26,22 @@ public sealed class TokenExchangeService
     private readonly IMemoryCache _cache;
     private readonly ILogger<TokenExchangeService> _log;
     private readonly string _exchangeUrl;
-    private readonly string _audience;
+    private readonly string[] _audiences;
 
     public TokenExchangeService(
         IHttpClientFactory httpFactory,
         IMemoryCache cache,
-        ILogger<TokenExchangeService> log)
+        ILogger<TokenExchangeService> log,
+        string authServiceUrl,
+        string[] audiences)
     {
+        if (audiences.Length == 0)
+            throw new ArgumentException("audiences must not be empty", nameof(audiences));
+
         _httpFactory = httpFactory;
         _cache = cache;
         _log = log;
-
-        string authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
-            ?? throw new InvalidOperationException("AUTH_SERVICE_URL is required");
-        _audience = Environment.GetEnvironmentVariable("AUTH_JWT_AUDIENCE") ?? "market-api";
+        _audiences = audiences;
         _exchangeUrl = $"{authServiceUrl.TrimEnd('/')}/exchange";
     }
 
@@ -52,7 +54,12 @@ public sealed class TokenExchangeService
     {
         try
         {
-            string cacheKey = CachePrefix + HashToken(rawToken);
+            // Include audiences in the cache key as defensive isolation, even though each
+            // app already has its own DI container and singleton. Prevents cross-audience
+            // bleed if two services in the same container ever share a cache. Sort first
+            // so different orderings of the same set hit the same cache entry.
+            string audienceTag = string.Join(",", _audiences.OrderBy(a => a, StringComparer.Ordinal));
+            string cacheKey = CachePrefix + HashToken(rawToken) + ":" + audienceTag;
 
             if (_cache.TryGetValue(cacheKey, out ClaimsPrincipal? cached))
             {
@@ -63,7 +70,7 @@ public sealed class TokenExchangeService
             _log.LogDebug("Attempting token exchange at {Url}", _exchangeUrl);
 
             using var client = _httpFactory.CreateClient(HttpClientName);
-            var payload = new ExchangeRequest(rawToken, _audience);
+            var payload = new ExchangeRequest(rawToken, _audiences);
 
             using var response = await client.PostAsJsonAsync(_exchangeUrl, payload, ct);
 
@@ -142,7 +149,7 @@ public sealed class TokenExchangeService
 
     private sealed record ExchangeRequest(
         [property: JsonPropertyName("token")] string Token,
-        [property: JsonPropertyName("audience")] string Audience);
+        [property: JsonPropertyName("audience")] string[] Audience);
 
     private sealed record ExchangeResponse(
         [property: JsonPropertyName("token")] string Token,

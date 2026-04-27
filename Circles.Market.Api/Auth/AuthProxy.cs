@@ -3,27 +3,38 @@ using System.Text.Json;
 namespace Circles.Market.Api.Auth;
 
 /// <summary>
-/// Proxies /api/auth/* requests to the centralized auth-service (DigitalOcean).
+/// Proxies /auth/* requests to the centralized auth-service.
 /// The auth-service handles SIWE challenge/verify and issues RS256 JWTs.
 /// This keeps the frontend URL unchanged while delegating auth entirely to the auth-service.
 ///
-/// The proxy injects the configured JWT audience into /challenge requests so the
-/// auth-service issues tokens with the correct aud claim (matching AUTH_JWT_AUDIENCE).
+/// The proxy injects the configured JWT audience(s) into /challenge requests so the
+/// auth-service issues tokens with the correct aud claim. Frontend-supplied audience values
+/// are overridden — each marketplace-api app dictates which audience(s) its tokens carry.
 /// </summary>
 public static class AuthProxy
 {
-    public static IEndpointRouteBuilder MapAuthProxy(this IEndpointRouteBuilder app, string basePath = "/api/auth")
+    /// <summary>
+    /// Maps /challenge and /verify endpoints under <paramref name="basePath"/>, proxied to the
+    /// auth-service. Pass <paramref name="audiences"/> with the audience(s) this app expects in
+    /// minted JWTs: <c>["market-api"]</c> for the public app,
+    /// <c>["market-api","market-admin-api"]</c> for the admin app (so admin tokens carry both
+    /// claims and remain usable on the public app under shortest-TTL-wins semantics).
+    /// </summary>
+    public static IEndpointRouteBuilder MapAuthProxy(
+        this IEndpointRouteBuilder app, string basePath, string[] audiences)
     {
+        if (audiences.Length == 0)
+            throw new ArgumentException("audiences must not be empty", nameof(audiences));
+
         string authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
             ?? throw new InvalidOperationException("AUTH_SERVICE_URL is required for auth proxy");
 
-        string audience = Environment.GetEnvironmentVariable("AUTH_JWT_AUDIENCE") ?? "market-api";
         string upstream = authServiceUrl.TrimEnd('/');
 
         var group = app.MapGroup(basePath);
 
         group.MapPost("/challenge", async (HttpContext ctx, IHttpClientFactory httpFactory) =>
-            await ProxyChallenge(ctx, httpFactory, $"{upstream}/challenge", audience))
+            await ProxyChallenge(ctx, httpFactory, $"{upstream}/challenge", audiences))
             .WithSummary("Proxy auth challenge to auth-service");
 
         group.MapPost("/verify", async (HttpContext ctx, IHttpClientFactory httpFactory) =>
@@ -35,10 +46,11 @@ public static class AuthProxy
 
     /// <summary>
     /// Proxies the /challenge request and injects "audience" into the JSON body
-    /// so the auth-service issues tokens with the correct aud claim.
+    /// so the auth-service issues tokens with the correct aud claim. Always serializes as array;
+    /// the auth-service zod schema accepts string | string[].
     /// </summary>
     private static async Task<IResult> ProxyChallenge(
-        HttpContext ctx, IHttpClientFactory httpFactory, string targetUrl, string audience)
+        HttpContext ctx, IHttpClientFactory httpFactory, string targetUrl, string[] audiences)
     {
         var log = ctx.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("AuthProxy");
 
@@ -56,8 +68,8 @@ public static class AuthProxy
                 foreach (var prop in doc.EnumerateObject())
                     merged[prop.Name] = prop.Value;
             }
-            // Inject audience (override if frontend sent a different one)
-            merged["audience"] = JsonSerializer.SerializeToElement(audience);
+            // Inject audience(s) (override if frontend sent a different value)
+            merged["audience"] = JsonSerializer.SerializeToElement(audiences);
 
             var newBody = JsonSerializer.SerializeToUtf8Bytes(merged);
             using var content = new ByteArrayContent(newBody);

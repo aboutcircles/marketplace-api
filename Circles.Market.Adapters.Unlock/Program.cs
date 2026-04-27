@@ -430,7 +430,11 @@ var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
 adminBuilder.Logging.AddConsole();
 adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("UNLOCK_ADMIN_PORT", 5692)}");
-adminBuilder.Services.AddAuthServiceJwks();
+// Admin app receives JWTs forwarded from marketplace-api admin (5090).
+// Tokens originate from admin sign-in flow and carry single-audience market-admin-api.
+adminBuilder.Services.AddAuthServiceJwks(
+    validAudiences: new[] { "market-admin-api" },
+    exchangeAudiences: new[] { "market-admin-api" });
 adminBuilder.Services.AddSingleton<IUnlockMappingResolver>(sp =>
     new PostgresUnlockMappingResolver(connString, sp.GetRequiredService<ILogger<PostgresUnlockMappingResolver>>()));
 

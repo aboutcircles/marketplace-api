@@ -638,7 +638,11 @@ adminBuilder.WebHost.UseUrls($"http://0.0.0.0:{AdminPortConfig.GetAdminPort("ODO
 adminBuilder.Services.AddHttpClient();
 adminBuilder.Services.AddSingleton<IOdooConnectionResolver>(sp =>
     new PostgresOdooConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresOdooConnectionResolver>>()));
-adminBuilder.Services.AddAuthServiceJwks();
+// Admin app receives JWTs forwarded from marketplace-api admin (5090).
+// Tokens originate from admin sign-in flow and carry single-audience market-admin-api.
+adminBuilder.Services.AddAuthServiceJwks(
+    validAudiences: new[] { "market-admin-api" },
+    exchangeAudiences: new[] { "market-admin-api" });
 
 var adminApp = adminBuilder.Build();
 adminApp.UseAuthentication();
