@@ -588,7 +588,11 @@ adminBuilder.Services.AddSingleton<IWooCommerceConnectionResolver>(sp =>
     new PostgresWooCommerceConnectionResolver(connString, sp.GetRequiredService<ILogger<PostgresWooCommerceConnectionResolver>>()));
 adminBuilder.Services.AddSingleton<IProductMappingResolver>(sp =>
     new PostgresProductMappingResolver(connString, sp.GetRequiredService<ILogger<PostgresProductMappingResolver>>()));
-adminBuilder.Services.AddAuthServiceJwks();
+// Admin app receives JWTs forwarded from marketplace-api admin (5090).
+// Tokens originate from admin sign-in flow and carry single-audience market-admin-api.
+adminBuilder.Services.AddAuthServiceJwks(
+    validAudiences: new[] { "market-admin-api" },
+    exchangeAudiences: new[] { "market-admin-api" });
 
 var adminApp = adminBuilder.Build();
 adminApp.UseAuthentication();

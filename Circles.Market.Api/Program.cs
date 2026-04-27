@@ -302,9 +302,13 @@ publicBuilder.Services.AddCors(options =>
 });
 
 // Auth: auth-service JWKS (RS256) — sole buyer authentication
-// Clients authenticate via the auth-service (DO) challenge/verify flow
+// Clients authenticate via the auth-service challenge/verify flow
 // and send: Authorization: Bearer <auth-service-jwt>
-publicBuilder.Services.AddAuthServiceJwks();
+//
+// Public app: validates aud=market-api; exchange (federation fallback) requests market-api.
+publicBuilder.Services.AddAuthServiceJwks(
+    validAudiences: new[] { "market-api" },
+    exchangeAudiences: new[] { "market-api" });
 
 var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT");
 if (!string.IsNullOrEmpty(otlpEndpoint))
@@ -397,7 +401,7 @@ publicApp.MapHealthChecks("/health/ready", new HealthCheckOptions
 });
 
 publicApp.MapCartApi();
-publicApp.MapAuthProxy("/api/auth");
+publicApp.MapAuthProxy("/api/auth", new[] { "market-api" });
 publicApp.MapPinApi();
 publicApp.MapInventoryApi();
 publicApp.MapCanonicalizeApi();
@@ -414,7 +418,16 @@ var adminAddresses = new HashSet<string>(
         .Select(a => a.ToLowerInvariant()),
     StringComparer.OrdinalIgnoreCase);
 
-adminBuilder.Services.AddAuthServiceJwks();
+// Admin app: validates aud=market-admin-api (only admins get this claim).
+// Admin tokens are SINGLE-AUDIENCE — admin tokens don't carry the buyer market-api
+// claim, so an admin token can't be used on the public app. This enforces a clean
+// separation: an admin who also wants buyer access does the buyer sign-in
+// independently (separate token in core-app's localStorage). Prevents an admin
+// token's short TTL from bleeding into 7-day buyer flows, and prevents admin token
+// theft from granting any buyer access.
+adminBuilder.Services.AddAuthServiceJwks(
+    validAudiences: new[] { "market-admin-api" },
+    exchangeAudiences: new[] { "market-admin-api" });
 
 adminBuilder.Services.AddAuthorization(options =>
 {
@@ -519,8 +532,21 @@ adminApp.UseCors("AdminCors");
 adminApp.UseAuthentication();
 adminApp.UseAuthorization();
 
-adminApp.MapAuthProxy("/admin/auth");
+adminApp.MapAuthProxy("/admin/auth", new[] { "market-admin-api" });
 adminApp.MapMarketAdminApi("/admin", pgConn!);
+
+// Startup-time audience-catalog drift check. Fails fast if the auth-service does
+// not know about audiences this app expects to mint and validate against.
+{
+    string catalogAuthUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
+        ?? throw new InvalidOperationException("AUTH_SERVICE_URL is required");
+    var catalogLogger = publicApp.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("AudienceCatalogValidator");
+    await Circles.Market.Shared.Auth.AudienceCatalogValidator.EnsureKnownAsync(
+        catalogAuthUrl,
+        new[] { "market-api", "market-admin-api" },
+        catalogLogger);
+}
 
 var publicTask = publicApp.RunAsync();
 var adminTask = adminApp.RunAsync();

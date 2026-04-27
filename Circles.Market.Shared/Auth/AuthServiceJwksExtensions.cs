@@ -13,13 +13,34 @@ namespace Circles.Market.Shared.Auth;
 /// </summary>
 public static class AuthServiceJwksExtensions
 {
-    public static void AddAuthServiceJwks(this IServiceCollection services)
+    /// <summary>
+    /// Registers auth-service JWKS auth.
+    /// </summary>
+    /// <param name="validAudiences">
+    /// Audiences this app accepts in the JWT <c>aud</c> claim. A token is accepted if its
+    /// <c>aud</c> claim contains ANY of these. The public app should pass
+    /// <c>["market-api"]</c>; the admin app should pass <c>["market-admin-api"]</c>.
+    /// </param>
+    /// <param name="exchangeAudiences">
+    /// Audiences requested when falling back to the auth-service /exchange endpoint
+    /// (federated tokens, e.g. Gnosis App). The public app should pass <c>["market-api"]</c>;
+    /// the admin app should pass <c>["market-admin-api"]</c>. Admin tokens are deliberately
+    /// single-audience; admins federate separately for the public surface if needed.
+    /// </param>
+    public static void AddAuthServiceJwks(
+        this IServiceCollection services,
+        string[] validAudiences,
+        string[] exchangeAudiences)
     {
+        if (validAudiences.Length == 0)
+            throw new ArgumentException("validAudiences must not be empty", nameof(validAudiences));
+        if (exchangeAudiences.Length == 0)
+            throw new ArgumentException("exchangeAudiences must not be empty", nameof(exchangeAudiences));
+
         string authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
             ?? throw new InvalidOperationException("AUTH_SERVICE_URL is required");
 
         string issuer = Environment.GetEnvironmentVariable("AUTH_JWT_ISSUER") ?? "circles-auth";
-        string audience = Environment.GetEnvironmentVariable("AUTH_JWT_AUDIENCE") ?? "market-api";
         string jwksUrl = $"{authServiceUrl.TrimEnd('/')}/.well-known/jwks.json";
 
         services.AddSingleton(sp =>
@@ -37,7 +58,12 @@ public static class AuthServiceJwksExtensions
         {
             client.Timeout = TimeSpan.FromSeconds(5);
         });
-        services.AddSingleton<TokenExchangeService>();
+        services.AddSingleton(sp => new TokenExchangeService(
+            sp.GetRequiredService<IHttpClientFactory>(),
+            sp.GetRequiredService<IMemoryCache>(),
+            sp.GetRequiredService<ILogger<TokenExchangeService>>(),
+            authServiceUrl,
+            exchangeAudiences));
 
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
@@ -49,7 +75,7 @@ public static class AuthServiceJwksExtensions
                     ValidateIssuerSigningKey = true,
                     ValidateLifetime = true,
                     ValidIssuer = issuer,
-                    ValidAudience = audience,
+                    ValidAudiences = validAudiences,
                     ClockSkew = TimeSpan.FromSeconds(30)
                 };
 
