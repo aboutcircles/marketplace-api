@@ -24,8 +24,8 @@ public static class AuthServiceJwksExtensions
     /// <param name="exchangeAudiences">
     /// Audiences requested when falling back to the auth-service /exchange endpoint
     /// (federated tokens, e.g. Gnosis App). The public app should pass <c>["market-api"]</c>;
-    /// the admin app should pass <c>["market-api","market-admin-api"]</c> so the resulting
-    /// Circles JWT is usable on both apps.
+    /// the admin app should pass <c>["market-admin-api"]</c>. Admin tokens are deliberately
+    /// single-audience; admins federate separately for the public surface if needed.
     /// </param>
     public static void AddAuthServiceJwks(
         this IServiceCollection services,

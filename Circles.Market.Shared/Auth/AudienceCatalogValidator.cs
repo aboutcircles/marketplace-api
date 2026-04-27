@@ -20,7 +20,8 @@ public static class AudienceCatalogValidator
     /// is a subset. Throws <see cref="InvalidOperationException"/> on drift or on
     /// repeated network failure. Set <c>SKIP_AUDIENCE_CATALOG_CHECK=1</c> to bypass
     /// entirely (intended for CI / local dev where auth-service is not running).
-    /// Retries transient network failures up to 3 times with 2-second backoff.
+    /// Retries transient network failures up to 5 times with exponential backoff
+    /// (2s, 4s, 8s, 16s between attempts; ~30s total wait across the 4 inter-attempt sleeps).
     /// </summary>
     public static async Task EnsureKnownAsync(
         string authServiceUrl,
@@ -50,8 +51,11 @@ public static class AudienceCatalogValidator
 
         AudiencesResponse? body = null;
         Exception? lastError = null;
-        // 5 attempts with exponential backoff (2s, 4s, 8s, 16s, 32s ≈ 62s total) gives
-        // enough headroom to ride through a full rolling-deploy cycle of one auth-service node.
+        // 5 attempts with exponential backoff between them: sleeps of 2s, 4s, 8s, 16s
+        // (~30s total inter-attempt wait — the 32s after the 5th attempt never runs because
+        // the loop only sleeps when attempt < maxAttempts). Plus per-attempt request cost
+        // up to the 10s HttpClient timeout. Enough headroom to ride through a rolling-deploy
+        // cycle of one auth-service node.
         const int maxAttempts = 5;
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++)

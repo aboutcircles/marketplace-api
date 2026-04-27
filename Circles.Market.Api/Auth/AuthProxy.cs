@@ -16,9 +16,9 @@ public static class AuthProxy
     /// <summary>
     /// Maps /challenge and /verify endpoints under <paramref name="basePath"/>, proxied to the
     /// auth-service. Pass <paramref name="audiences"/> with the audience(s) this app expects in
-    /// minted JWTs: <c>["market-api"]</c> for the public app,
-    /// <c>["market-api","market-admin-api"]</c> for the admin app (so admin tokens carry both
-    /// claims and remain usable on the public app under shortest-TTL-wins semantics).
+    /// minted JWTs: <c>["market-api"]</c> for the public app, <c>["market-admin-api"]</c> for
+    /// the admin app. Admin tokens are deliberately single-audience and never usable on the
+    /// public app — admins sign in separately for each surface.
     /// </summary>
     public static IEndpointRouteBuilder MapAuthProxy(
         this IEndpointRouteBuilder app, string basePath, string[] audiences)
