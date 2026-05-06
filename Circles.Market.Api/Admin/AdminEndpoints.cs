@@ -390,6 +390,37 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             return Results.Json(body);
         });
 
+        group.MapDelete("/odoo-stock/{chainId:long}/{seller}/{sku}", async (
+            HttpContext ctx,
+            long chainId,
+            string seller,
+            string sku,
+            IHttpClientFactory httpClientFactory,
+            CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            var odooClient = httpClientFactory.CreateClient("odoo-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Delete,
+                $"/admin/stock/{chainId}/{Uri.EscapeDataString(sellerNorm)}/{Uri.EscapeDataString(skuNorm)}");
+            req.Headers.Authorization = bearerHeader;
+
+            using var resp = await odooClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return Results.NotFound(new { error = "stock not configured" });
+            if (!resp.IsSuccessStatusCode)
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            return Results.Json(new { ok = true });
+        });
+
         group.MapGet("/odoo-product-catalog", async (HttpContext ctx, long chainId, string seller, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
         {
             if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });

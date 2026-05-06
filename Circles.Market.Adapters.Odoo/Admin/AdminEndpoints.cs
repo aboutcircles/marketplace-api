@@ -273,6 +273,33 @@ DO UPDATE SET
             });
         });
 
+        group.MapDelete("/stock/{chainId:long}/{seller}/{sku}", async (
+            long chainId,
+            string seller,
+            string sku,
+            CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            await using var conn = new NpgsqlConnection(postgresConn);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM inventory_stock WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
+            cmd.Parameters.AddWithValue(chainId);
+            cmd.Parameters.AddWithValue(sellerNorm);
+            cmd.Parameters.AddWithValue(skuNorm);
+
+            int rows = await cmd.ExecuteNonQueryAsync(ct);
+            if (rows == 0)
+                return Results.NotFound(new { error = "stock not configured" });
+            return Results.Json(new { ok = true });
+        });
+
         group.MapDelete("/mappings/{chainId:long}/{seller}/{sku}", async (long chainId, string seller, string sku, CancellationToken ct) =>
         {
             if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
