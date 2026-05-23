@@ -26,11 +26,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   wc-wordpress:
     image: wordpress:6-apache
@@ -56,11 +51,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 45s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   wc-setup:
     image: wordpress:cli-2.10
