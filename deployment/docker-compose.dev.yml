@@ -67,11 +67,6 @@ services:
         condition: service_healthy
       init-db:
         condition: service_completed_successfully
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
     deploy:
       resources:
         limits:
@@ -92,11 +87,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
 
   market-adapter-odoo:
     build:
@@ -124,11 +114,6 @@ services:
         condition: service_healthy
       init-db:
         condition: service_completed_successfully
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
     deploy:
       resources:
         limits:
@@ -149,11 +134,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
 
   market-adapter-codedispenser:
     build:
@@ -182,11 +162,6 @@ services:
         condition: service_healthy
       init-db:
         condition: service_completed_successfully
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
     deploy:
       resources:
         limits:
@@ -207,11 +182,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
 
   market-adapter-unlock:
     build:
@@ -239,11 +209,6 @@ services:
         condition: service_healthy
       init-db:
         condition: service_completed_successfully
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
     deploy:
       resources:
         limits:
@@ -264,11 +229,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
 
   market-adapter-woocommerce:
     build:
@@ -296,11 +256,6 @@ services:
         condition: service_healthy
       init-db:
         condition: service_completed_successfully
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
     deploy:
       resources:
         limits:
@@ -321,11 +276,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
 
   init-db:
     image: postgres:${POSTGRES_TAG}
@@ -381,11 +331,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   nginx:
     image: nginx:${NGINX_TAG}
@@ -404,11 +349,6 @@ services:
     depends_on:
       market-api-health:
         condition: service_healthy
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 networks:
   public: {}
