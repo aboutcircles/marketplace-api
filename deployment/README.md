@@ -182,3 +182,28 @@ curl -i http://localhost:5090/admin/health
 ## Caveats
 The database schema is partially created lazily:
 * The `baskets` table only appears in the db once the first basket is created.
+
+## Log rotation
+These compose files do **not** pin a per-service `logging:` driver, so containers inherit Docker's daemon-level default. On a stock Docker install the default is `json-file` with **no rotation** — container logs grow unbounded and can fill the disk.
+
+Configure rotation at the daemon level in `/etc/docker/daemon.json` and restart `docker`:
+
+```json
+{
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+```
+
+Or use `journald` for system-integrated logging (recommended for production hosts running `systemd`):
+
+```json
+{
+  "log-driver": "journald"
+}
+```
+
+When using `journald`, bound the global pool via `/etc/systemd/journald.conf` (`SystemMaxUse=4G` is a reasonable default).
