@@ -677,7 +677,7 @@ public sealed class UnlockClient : IUnlockClient
 
     private async Task<string> FetchTicketQrCodeDataUrlAsync(UnlockMappingEntry mapping, BigInteger keyId, CancellationToken ct)
     {
-        var relative = $"v2/api/ticket/{mapping.ChainId}/{mapping.LockAddress}/{keyId}/qr";
+        var relative = $"v2/api/ticket/{mapping.ChainId}/lock/{mapping.LockAddress}/key/{keyId}/qr";
         var result = await GetLocksmithAsync(mapping, relative, ct);
 
         if (!result.IsSuccessStatusCode)

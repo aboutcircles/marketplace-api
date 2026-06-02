@@ -321,8 +321,10 @@ The Market API hosts a background payments poller.
 *   `PAGE_SIZE`: Number of events to fetch per RPC call (default: `500`).
 *   `CONFIRM_CONFIRMATIONS`: Blocks before a payment is considered "confirmed" (default: `3`).
 *   `FINALIZE_CONFIRMATIONS`: Blocks before a payment is considered "finalized" (default: `12`).
-*   `PAYMENT_GATEWAYS`: CSV list of payment gateway addresses to monitor.
-*   **RPC Requirement**: The RPC endpoint must support `eth_blockNumber` and `circles_query` for `CrcV2_PaymentGateway.PaymentReceived`.
+*   **Token-trust (always on)**: Only transfers in a token the receiving gateway trusts (its on-chain `CrcV2_PaymentGateway.TrustUpdated` list) count toward an order's paid total. Untrusted tokens — and tokens whose trust state can't yet be resolved — are recorded in `payment_transfers` (with `eligible = false`/`null`) but never credited; `marketplace_payments_ineligible_token_total` counts the rejected ones. This is unconditional; there is no opt-out flag.
+*   `PAYMENT_GATEWAYS`: CSV list of authoritative payment gateway addresses (optional gateway filter). If unset, payment events from **any** gateway are processed and a startup warning is logged: token-trust is still enforced per gateway, but without an allowlist a payment routed through an attacker-controlled gateway that self-trusts a token would be credited. Set this once the gateway-authorization model is decided.
+*   `PAYMENT_TRUST_CACHE_TTL_SECONDS`: TTL for the per-gateway trust-set cache used during eligibility checks (default: `60`).
+*   **RPC Requirement**: The RPC endpoint must support `eth_blockNumber` and `circles_query` for `CrcV2_PaymentGateway.PaymentReceived` and `CrcV2_PaymentGateway.TrustUpdated`. If `TrustUpdated` can't be queried, transfers stay `eligible = null` (uncredited, retried) rather than being wrongly credited.
 
 ### Outbound request controls (SSRF / safety)
 *   `OUTBOUND_AVAILABILITY_TIMEOUT_MS`: Timeout for checking item availability (default: `800`).

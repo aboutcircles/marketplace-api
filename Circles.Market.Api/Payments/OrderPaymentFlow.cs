@@ -47,6 +47,42 @@ public sealed class OrderPaymentFlow : IOrderPaymentFlow
             Message: "Payment transfer observed",
             Details: null));
 
+        // Surface transfers in a token the gateway does not trust; these are recorded but never credited.
+        if (transfer.Eligible == false)
+        {
+            Metrics.MarketplaceMetrics.PaymentsIneligibleToken.Inc();
+            _trace.Emit(new OrderProcessingTraceEvent(
+                OccurredAt: DateTimeOffset.UtcNow,
+                Stage: "payment_ineligible_token",
+                Status: "warn",
+                OrderId: null,
+                PaymentReference: transfer.PaymentReference,
+                ChainId: transfer.ChainId,
+                SellerAddress: null,
+                BuyerAddress: transfer.PayerAddress,
+                ReasonCode: "untrusted_token",
+                Message: $"Received token {transfer.TokenAvatar} is not trusted by gateway {transfer.GatewayAddress}; not credited",
+                Details: null));
+        }
+        // Surface transfers whose trust state is not yet resolved (e.g. trust RPC unavailable). These
+        // are recorded, not credited, and retried each tick — make the stall visible to operators.
+        else if (transfer.Eligible is null)
+        {
+            Metrics.MarketplaceMetrics.PaymentsUndeterminedToken.Inc();
+            _trace.Emit(new OrderProcessingTraceEvent(
+                OccurredAt: DateTimeOffset.UtcNow,
+                Stage: "payment_undetermined_token",
+                Status: "warn",
+                OrderId: null,
+                PaymentReference: transfer.PaymentReference,
+                ChainId: transfer.ChainId,
+                SellerAddress: null,
+                BuyerAddress: transfer.PayerAddress,
+                ReasonCode: "trust_undetermined",
+                Message: $"Token trust for {transfer.TokenAvatar ?? "(no token)"} at gateway {transfer.GatewayAddress} not yet determined; not credited, will retry",
+                Details: null));
+        }
+
         var aggregated = _payments.UpsertAndGetPayment(transfer.ChainId, transfer.PaymentReference);
         if (aggregated is null) return Task.CompletedTask;
 

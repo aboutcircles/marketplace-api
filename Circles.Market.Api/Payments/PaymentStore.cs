@@ -9,6 +9,8 @@ public interface IPaymentStore
     void UpsertObservedTransfer(PaymentTransferRecord transfer);
 
     // Recompute and persist the aggregated payment row for a payment_reference. Return row or null.
+    // Only transfers flagged eligible (token trusted by the receiving gateway) contribute to
+    // total_amount_wei; untrusted and undetermined transfers are recorded but never credited.
     PaymentRecord? UpsertAndGetPayment(long chainId, string paymentReference);
 
     // Mark a payment as confirmed.
@@ -21,6 +23,13 @@ public interface IPaymentStore
     PaymentRecord? GetPayment(long chainId, string paymentReference);
 
     IEnumerable<PaymentTransferRecord> GetTransfersByReference(long chainId, string paymentReference);
+
+    // Transfers whose token-trust eligibility has not yet been resolved (eligible IS NULL) but which
+    // carry a token avatar we can decide on. Used by the poller's re-evaluation pass.
+    IEnumerable<PaymentTransferRecord> GetUndeterminedTransfers(long chainId, int limit);
+
+    // Resolve a previously-undetermined transfer's eligibility. No-op once already determined.
+    void SetTransferEligibility(long chainId, string txHash, int logIndex, bool eligible);
 }
 
 // Per-log transfer row in payment_transfers
@@ -34,7 +43,13 @@ public sealed record PaymentTransferRecord(
     string GatewayAddress,
     string? PayerAddress,
     BigInteger? AmountWei,
-    DateTimeOffset CreatedAt
+    DateTimeOffset CreatedAt,
+    // ERC1155 token id of the received CRC (CrcV2_PaymentGateway.PaymentReceived.tokenId).
+    BigInteger? TokenId = null,
+    // Avatar address derived from TokenId (low 160 bits, 0x + 40 hex lowercased).
+    string? TokenAvatar = null,
+    // Token-trust eligibility: true = gateway trusts the token, false = does not, null = undetermined.
+    bool? Eligible = null
 );
 
 // Aggregated payment row in payments (one per payment_reference)
@@ -115,6 +130,25 @@ CREATE TABLE IF NOT EXISTS payment_transfers (
                 idxg.ExecuteNonQuery();
             }
 
+            // Additive migration: token-trust columns. Existing rows get NULLs (undetermined) and are
+            // re-evaluated by the poller. token_id/token_avatar record which CRC was received; eligible
+            // captures whether the receiving gateway trusts that token.
+            using (var alt = conn.CreateCommand())
+            {
+                alt.CommandText = @"
+ALTER TABLE payment_transfers ADD COLUMN IF NOT EXISTS token_id      numeric(78,0) NULL;
+ALTER TABLE payment_transfers ADD COLUMN IF NOT EXISTS token_avatar  text          NULL;
+ALTER TABLE payment_transfers ADD COLUMN IF NOT EXISTS eligible      boolean       NULL;";
+                alt.ExecuteNonQuery();
+            }
+
+            // Partial index to keep the re-evaluation scan cheap (only undetermined-but-decidable rows).
+            using (var idxe = conn.CreateCommand())
+            {
+                idxe.CommandText = "CREATE INDEX IF NOT EXISTS ix_payment_transfers_undetermined ON payment_transfers (chain_id, block_number) WHERE eligible IS NULL AND token_avatar IS NOT NULL;";
+                idxe.ExecuteNonQuery();
+            }
+
             // Create payments table (aggregated per reference)
             using (var cmd2 = conn.CreateCommand())
             {
@@ -178,8 +212,10 @@ CREATE TABLE IF NOT EXISTS payments (
         cmd.CommandText = @"
 INSERT INTO payment_transfers (
   chain_id, tx_hash, log_index, transaction_index, block_number, payment_reference,
-  gateway_address, payer_address, amount_wei, created_at)
-VALUES (@chain, @tx, @log, @tix, @block, @ref, @gw, @payer, CAST(@amt AS numeric), @created)
+  gateway_address, payer_address, amount_wei, created_at,
+  token_id, token_avatar, eligible)
+VALUES (@chain, @tx, @log, @tix, @block, @ref, @gw, @payer, CAST(@amt AS numeric), @created,
+        CAST(@tokenId AS numeric), @tokenAvatar, @eligible)
 ON CONFLICT (chain_id, tx_hash, log_index)
 DO UPDATE SET
   transaction_index = COALESCE(EXCLUDED.transaction_index, payment_transfers.transaction_index),
@@ -188,7 +224,11 @@ DO UPDATE SET
   amount_wei        = COALESCE(EXCLUDED.amount_wei, payment_transfers.amount_wei),
   gateway_address   = EXCLUDED.gateway_address,
   payment_reference = EXCLUDED.payment_reference,
-  created_at        = LEAST(payment_transfers.created_at, EXCLUDED.created_at);";
+  created_at        = LEAST(payment_transfers.created_at, EXCLUDED.created_at),
+  token_id          = COALESCE(payment_transfers.token_id, EXCLUDED.token_id),
+  token_avatar      = COALESCE(payment_transfers.token_avatar, EXCLUDED.token_avatar),
+  -- Eligibility is sticky once determined: keep an existing true/false, only fill a NULL.
+  eligible          = COALESCE(payment_transfers.eligible, EXCLUDED.eligible);";
         cmd.Parameters.AddWithValue("@chain", t.ChainId);
         cmd.Parameters.AddWithValue("@tx", t.TxHash.ToLowerInvariant());
         cmd.Parameters.AddWithValue("@log", t.LogIndex);
@@ -199,6 +239,9 @@ DO UPDATE SET
         cmd.Parameters.AddWithValue("@payer", (object?)t.PayerAddress?.ToLowerInvariant() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@amt", (object?)t.AmountWei?.ToString() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@created", t.CreatedAt);
+        cmd.Parameters.AddWithValue("@tokenId", (object?)t.TokenId?.ToString() ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@tokenAvatar", (object?)t.TokenAvatar?.ToLowerInvariant() ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@eligible", (object?)t.Eligible ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -207,17 +250,22 @@ DO UPDATE SET
         using var conn = new NpgsqlConnection(_connString);
         conn.Open();
 
+        // Only transfers in a token the receiving gateway trusts contribute to the paid total.
+        // Untrusted (eligible=false) and undetermined (eligible IS NULL) transfers are recorded but
+        // never credited, so an order is only marked paid by trusted-token value.
+        const string sumExpr = "SUM(amount_wei) FILTER (WHERE eligible IS TRUE)";
+
         // Aggregate from payment_transfers
         using (var agg = conn.CreateCommand())
         {
-            agg.CommandText = @"
+            agg.CommandText = $@"
 WITH s AS (
-  SELECT 
+  SELECT
     chain_id,
     payment_reference,
     MIN(gateway_address) AS gateway_address,
     MIN(payer_address)   AS payer_address,
-    SUM(amount_wei)      AS total_amount_wei,
+    {sumExpr}      AS total_amount_wei,
     MIN(created_at)      AS created_at,
     MIN(block_number)    AS first_block_number,
     (ARRAY_AGG(tx_hash ORDER BY block_number, transaction_index, log_index))[1]  AS first_tx_hash,
@@ -358,31 +406,79 @@ FROM payments WHERE chain_id=@c AND payment_reference=@r";
         using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
 SELECT chain_id, tx_hash, log_index, transaction_index, block_number,
-       payment_reference, gateway_address, payer_address, amount_wei::text, created_at
+       payment_reference, gateway_address, payer_address, amount_wei::text, created_at,
+       token_id::text, token_avatar, eligible
 FROM payment_transfers WHERE chain_id=@c AND payment_reference=@r ORDER BY block_number, transaction_index, log_index";
         cmd.Parameters.AddWithValue("@c", chainId);
         cmd.Parameters.AddWithValue("@r", paymentReference);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            BigInteger? amount = null;
-            if (!reader.IsDBNull(8))
-            {
-                var txt = reader.GetString(8);
-                if (BigInteger.TryParse(txt, out var bi)) amount = bi;
-            }
-            yield return new PaymentTransferRecord(
-                ChainId: reader.GetInt64(0),
-                TxHash: reader.GetString(1),
-                LogIndex: reader.GetInt32(2),
-                TransactionIndex: reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                BlockNumber: reader.IsDBNull(4) ? null : reader.GetInt64(4),
-                PaymentReference: reader.GetString(5),
-                GatewayAddress: reader.GetString(6),
-                PayerAddress: reader.IsDBNull(7) ? null : reader.GetString(7),
-                AmountWei: amount,
-                CreatedAt: reader.GetFieldValue<DateTimeOffset>(9)
-            );
+            yield return MapTransfer(reader);
         }
+    }
+
+    public IEnumerable<PaymentTransferRecord> GetUndeterminedTransfers(long chainId, int limit)
+    {
+        using var conn = new NpgsqlConnection(_connString);
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+SELECT chain_id, tx_hash, log_index, transaction_index, block_number,
+       payment_reference, gateway_address, payer_address, amount_wei::text, created_at,
+       token_id::text, token_avatar, eligible
+FROM payment_transfers
+WHERE chain_id=@c AND eligible IS NULL AND token_avatar IS NOT NULL
+ORDER BY block_number ASC NULLS LAST
+LIMIT @lim";
+        cmd.Parameters.AddWithValue("@c", chainId);
+        cmd.Parameters.AddWithValue("@lim", Math.Max(1, limit));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            yield return MapTransfer(reader);
+        }
+    }
+
+    public void SetTransferEligibility(long chainId, string txHash, int logIndex, bool eligible)
+    {
+        using var conn = new NpgsqlConnection(_connString);
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        // Only resolve undetermined rows so an already-decided value never flips.
+        cmd.CommandText = @"
+UPDATE payment_transfers SET eligible=@e
+WHERE chain_id=@c AND tx_hash=@tx AND log_index=@log AND eligible IS NULL";
+        cmd.Parameters.AddWithValue("@e", eligible);
+        cmd.Parameters.AddWithValue("@c", chainId);
+        cmd.Parameters.AddWithValue("@tx", txHash.ToLowerInvariant());
+        cmd.Parameters.AddWithValue("@log", logIndex);
+        cmd.ExecuteNonQuery();
+    }
+
+    // Maps a payment_transfers row in the column order used by the SELECTs above.
+    private static PaymentTransferRecord MapTransfer(NpgsqlDataReader reader)
+    {
+        BigInteger? amount = null;
+        if (!reader.IsDBNull(8) && BigInteger.TryParse(reader.GetString(8), out var amt)) amount = amt;
+
+        BigInteger? tokenId = null;
+        if (!reader.IsDBNull(10) && BigInteger.TryParse(reader.GetString(10), out var tid)) tokenId = tid;
+
+        return new PaymentTransferRecord(
+            ChainId: reader.GetInt64(0),
+            TxHash: reader.GetString(1),
+            LogIndex: reader.GetInt32(2),
+            TransactionIndex: reader.IsDBNull(3) ? null : reader.GetInt32(3),
+            BlockNumber: reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            PaymentReference: reader.GetString(5),
+            GatewayAddress: reader.GetString(6),
+            PayerAddress: reader.IsDBNull(7) ? null : reader.GetString(7),
+            AmountWei: amount,
+            CreatedAt: reader.GetFieldValue<DateTimeOffset>(9),
+            TokenId: tokenId,
+            TokenAvatar: reader.IsDBNull(11) ? null : reader.GetString(11),
+            Eligible: reader.IsDBNull(12) ? null : reader.GetBoolean(12)
+        );
     }
 }
