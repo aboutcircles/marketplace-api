@@ -16,6 +16,18 @@ public static class MarketplaceMetrics
         "marketplace_payment_amount_crc_total",
         "Total CRC spent through marketplace orders");
 
+    public static readonly Counter PaymentsIneligibleToken = Prometheus.Metrics.CreateCounter(
+        "marketplace_payments_ineligible_token_total",
+        "Total payment transfers recorded but not credited because the received token is not trusted by the gateway");
+
+    public static readonly Counter PaymentsUndeterminedToken = Prometheus.Metrics.CreateCounter(
+        "marketplace_payments_undetermined_token_total",
+        "Payment transfers whose token-trust eligibility could not yet be determined (recorded, not credited, retried next tick)");
+
+    public static readonly Counter GatewayTrustFetchFailures = Prometheus.Metrics.CreateCounter(
+        "marketplace_gateway_trust_fetch_failures_total",
+        "Failures fetching a gateway's on-chain trust list; affected payments stay undetermined until it recovers");
+
     public static readonly Histogram OrderValueCrc = Prometheus.Metrics.CreateHistogram(
         "marketplace_order_value_crc",
         "Distribution of order values in CRC",

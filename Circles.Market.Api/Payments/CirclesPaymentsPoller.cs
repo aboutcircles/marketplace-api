@@ -52,6 +52,7 @@ public sealed class CirclesPaymentsPoller : BackgroundService
     private readonly ILogger<CirclesPaymentsPoller> _log;
     private readonly IHttpClientFactory _hcf;
     private readonly IOrderPaymentFlow _paymentFlow;
+    private readonly IPaymentStore _payments;
     private readonly string _rpcUrl;
     private readonly string _circlesRpcUrl;
     private readonly string _pgConn;
@@ -61,6 +62,10 @@ public sealed class CirclesPaymentsPoller : BackgroundService
     private readonly HashSet<string>? _gatewayAllowList; // lowercased
     private readonly int _confirmConfirmations;
     private readonly int _finalizeConfirmations;
+    private readonly TimeSpan _trustCacheTtl;
+    // gateway (lowercase) -> (active trusted avatar set, fetchedAt). Short-TTL cache so we don't
+    // re-query the gateway's on-chain trust list on every transfer.
+    private readonly Dictionary<string, (HashSet<string> Set, DateTimeOffset FetchedAt)> _trustCache = new();
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -70,11 +75,13 @@ public sealed class CirclesPaymentsPoller : BackgroundService
     public CirclesPaymentsPoller(
         ILogger<CirclesPaymentsPoller> log,
         IHttpClientFactory hcf,
-        IOrderPaymentFlow paymentFlow)
+        IOrderPaymentFlow paymentFlow,
+        IPaymentStore payments)
     {
         _log = log;
         _hcf = hcf;
         _paymentFlow = paymentFlow ?? throw new ArgumentNullException(nameof(paymentFlow));
+        _payments = payments ?? throw new ArgumentNullException(nameof(payments));
         // Configuration consistency: read exclusively from environment variables (same as Program.cs)
         _rpcUrl = Environment.GetEnvironmentVariable("RPC")
                   ?? throw new Exception("RPC env variable is required for payments poller");
@@ -113,6 +120,23 @@ public sealed class CirclesPaymentsPoller : BackgroundService
             _gatewayAllowList = new HashSet<string>(gatewaysCsv
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(a => a.ToLowerInvariant()));
+        }
+
+        var trustTtl = int.TryParse(Environment.GetEnvironmentVariable("PAYMENT_TRUST_CACHE_TTL_SECONDS"), out var ttl)
+            ? ttl
+            : 60;
+        _trustCacheTtl = TimeSpan.FromSeconds(Math.Max(1, trustTtl));
+
+        bool allowListEmpty = _gatewayAllowList is null || _gatewayAllowList.Count == 0;
+        if (allowListEmpty)
+        {
+            // Token-trust is always enforced per gateway, but without a gateway allowlist a payment
+            // routed through an attacker-controlled gateway that self-trusts a token would still be
+            // credited. Set PAYMENT_GATEWAYS (or settle the gateway-authorization model) to close this.
+            _log.LogWarning(
+                "PAYMENT_GATEWAYS is empty: payment events from ANY gateway are processed. Token-trust " +
+                "is still enforced per gateway, but an attacker-controlled gateway that self-trusts a token " +
+                "would be credited. Set PAYMENT_GATEWAYS to restrict authoritative gateways.");
         }
     }
 
@@ -211,6 +235,11 @@ public sealed class CirclesPaymentsPoller : BackgroundService
                         (transfer.AmountWei.HasValue && transfer.AmountWei.Value < 0))
                         continue;
 
+                    // Resolve token-trust eligibility against the receiving gateway's trust list and
+                    // annotate the transfer; the order payment flow credits only eligible (trusted) transfers.
+                    var trustSet = await GetGatewayTrustSetAsync(http, transfer.GatewayAddress, ct);
+                    transfer = transfer with { Eligible = DecideEligibility(trustSet, transfer.TokenAvatar) };
+
                     await _paymentFlow.HandleObservedTransferAsync(transfer, ct);
                     lastTransfer = transfer;
                     processed++;
@@ -245,7 +274,18 @@ public sealed class CirclesPaymentsPoller : BackgroundService
                 lastSeenLog);
         }
 
-        // 2) Regardless of ingestion, try to confirm and finalize eligible payments
+        // 2) Resolve any transfers whose token-trust eligibility was previously undetermined
+        // (e.g. trust data was briefly unavailable). A flip to eligible can complete an order.
+        try
+        {
+            await ReevaluateUndeterminedAsync(http, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "ReevaluateUndeterminedAsync failed");
+        }
+
+        // 3) Regardless of ingestion, try to confirm and finalize eligible payments
         try
         {
             await ConfirmEligibleAsync(http, ct);
@@ -446,6 +486,42 @@ ORDER BY first_block_number ASC";
         }
     }
 
+    private async Task ReevaluateUndeterminedAsync(HttpClient http, CancellationToken ct)
+    {
+        const int limit = 500;
+        // Oldest-first (ASC in the store query) so a backlog drains FIFO and the earliest stuck
+        // transfers can never be starved by a steady stream of newer ones.
+        var undetermined = _payments.GetUndeterminedTransfers(_chainId, limit).ToList();
+        if (undetermined.Count == 0) return;
+        if (undetermined.Count >= limit)
+        {
+            _log.LogWarning(
+                "Undetermined payment-transfer backlog hit the re-eval page limit ({Limit}); remaining transfers drain over subsequent ticks",
+                limit);
+        }
+
+        foreach (var t in undetermined)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var trustSet = await GetGatewayTrustSetAsync(http, t.GatewayAddress, ct);
+            // Reuse the single eligibility decision; null = still undetermined (no avatar or trust
+            // data unavailable) → leave it and retry next tick.
+            var verdict = DecideEligibility(trustSet, t.TokenAvatar);
+            if (verdict is null) continue;
+
+            bool eligible = verdict.Value;
+            _payments.SetTransferEligibility(t.ChainId, t.TxHash, t.LogIndex, eligible);
+
+            // Only a now-eligible transfer can move an order forward; re-run the flow to re-aggregate
+            // and attempt settlement. Ineligible stays recorded but uncredited (no flow call needed).
+            if (eligible)
+            {
+                await _paymentFlow.HandleObservedTransferAsync(t with { Eligible = true }, ct);
+            }
+        }
+    }
+
     public static long ParseEthHexBlock(string? hex)
     {
         if (string.IsNullOrWhiteSpace(hex))
@@ -490,6 +566,101 @@ ORDER BY first_block_number ASC";
         return ParseEthHexBlock(hex);
     }
 
+    /// <summary>
+    /// Active trusted-avatar set for a gateway, cached for _trustCacheTtl. Returns null when the
+    /// set cannot be determined (RPC error and no cached value), so the caller leaves the transfer
+    /// undetermined and retries later rather than wrongly rejecting it.
+    /// </summary>
+    private async Task<HashSet<string>?> GetGatewayTrustSetAsync(HttpClient http, string gateway, CancellationToken ct)
+    {
+        gateway = gateway.ToLowerInvariant();
+        var now = DateTimeOffset.UtcNow;
+        if (_trustCache.TryGetValue(gateway, out var cached) && (now - cached.FetchedAt) < _trustCacheTtl)
+        {
+            return cached.Set;
+        }
+
+        try
+        {
+            var set = await FetchActiveTrustSetAsync(http, gateway, now.ToUnixTimeSeconds(), ct);
+            _trustCache[gateway] = (set, now);
+            return set;
+        }
+        catch (Exception ex)
+        {
+            Metrics.MarketplaceMetrics.GatewayTrustFetchFailures.Inc();
+            _log.LogWarning(ex, "Failed to fetch gateway trust set for {Gateway}", gateway);
+            // Fall back to stale cache if we have one; else undetermined (null).
+            return _trustCache.TryGetValue(gateway, out var stale) ? stale.Set : null;
+        }
+    }
+
+    private async Task<HashSet<string>> FetchActiveTrustSetAsync(HttpClient http, string gateway, long nowUnix,
+        CancellationToken ct)
+    {
+        var reqModel = new CirclesQueryRequest
+        {
+            Namespace = "CrcV2_PaymentGateway",
+            Table = "TrustUpdated",
+            Columns = new(),
+            Filter = new List<object>
+            {
+                new { Type = "FilterPredicate", FilterType = "Equals", Column = "gateway", Value = gateway }
+            },
+            Order = new()
+            {
+                new OrderSpec { Column = "blockNumber", SortOrder = "ASC" },
+                new OrderSpec { Column = "transactionIndex", SortOrder = "ASC" },
+                new OrderSpec { Column = "logIndex", SortOrder = "ASC" }
+            },
+            Limit = 1000
+        };
+        var env = new CirclesQueryEnvelope<CirclesQueryRequest> { Params = new[] { reqModel } };
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, _circlesRpcUrl)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(env, JsonSerializerOptions.Web), Encoding.UTF8,
+                "application/json")
+        };
+        using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadAsStringAsync(ct);
+        var parsed = JsonSerializer.Deserialize<CirclesQueryResponse>(body, JsonOpts);
+
+        // A fault (JSON-RPC error, missing result, or schema drift) must NOT be mistaken for a
+        // genuine "gateway trusts nothing" answer — otherwise a transient RPC problem would cache an
+        // empty set and permanently reject every payment for this gateway. Throw so the caller leaves
+        // transfers undetermined and retries. Only a successful query (result present, expected columns)
+        // is treated as authoritative; zero rows then legitimately means an empty trust list.
+        if (parsed?.Error is not null)
+            throw new InvalidOperationException($"circles_query TrustUpdated returned a JSON-RPC error for gateway {gateway}: {parsed.Error}");
+        var result = parsed?.Result
+            ?? throw new InvalidOperationException($"circles_query TrustUpdated returned no result for gateway {gateway}");
+
+        if (result.Rows.Length > 0)
+        {
+            bool hasTrustCols =
+                Array.FindIndex(result.Columns, c => string.Equals(c, "trustReceiver", StringComparison.OrdinalIgnoreCase)) >= 0 &&
+                Array.FindIndex(result.Columns, c => string.Equals(c, "expiry", StringComparison.OrdinalIgnoreCase)) >= 0;
+            if (!hasTrustCols)
+                throw new InvalidOperationException($"circles_query TrustUpdated missing trustReceiver/expiry columns for gateway {gateway} (schema drift)");
+        }
+
+        return ParseActiveTrustSet(result.Columns, result.Rows, nowUnix);
+    }
+
+    /// <summary>
+    /// Decide a transfer's token-trust eligibility against a gateway trust set:
+    /// null trust set (unavailable) or missing token avatar → undetermined (null);
+    /// otherwise true iff the token's avatar is in the trusted set.
+    /// </summary>
+    internal static bool? DecideEligibility(HashSet<string>? trustSet, string? tokenAvatar)
+    {
+        if (string.IsNullOrEmpty(tokenAvatar)) return null;
+        if (trustSet is null) return null;
+        return trustSet.Contains(NormalizeAvatar(tokenAvatar));
+    }
+
     private PaymentTransferRecord? RowToPaymentTransfer(string[] cols, object[] row)
     {
         int Col(string n) => Array.FindIndex(cols, c => string.Equals(c, n, StringComparison.OrdinalIgnoreCase));
@@ -505,6 +676,7 @@ ORDER BY first_block_number ASC";
             var ipayer = Col("payer");
             var iamt = Col("amount");
             var idata = Col("data");
+            var itoken = Col("tokenId");
 
             long block = ToInt64(row[ib]);
             int txIndex = ToInt32(row[itx]);
@@ -514,6 +686,10 @@ ORDER BY first_block_number ASC";
             string? payer = ToStringOrNull(row[ipayer]);
 
             BigInteger? amount = ParseUintToBigInteger(row[iamt]);
+
+            // ERC1155 token id of the received CRC; resolve to its avatar so we can check gateway trust.
+            BigInteger? tokenId = itoken >= 0 && itoken < row.Length ? ParseUintToBigInteger(row[itoken]) : null;
+            string? tokenAvatar = tokenId.HasValue ? ToAvatarAddress(tokenId.Value) : null;
 
             string? rawPaymentRef = TryDecodePaymentRef(row[idata]);
             string? paymentRef = NormalizePaymentReference(rawPaymentRef);
@@ -534,7 +710,9 @@ ORDER BY first_block_number ASC";
                 GatewayAddress: gateway,
                 PayerAddress: payer?.ToLowerInvariant(),
                 AmountWei: amount,
-                CreatedAt: DateTimeOffset.UtcNow
+                CreatedAt: DateTimeOffset.UtcNow,
+                TokenId: tokenId,
+                TokenAvatar: tokenAvatar
             );
         }
         catch (Exception ex)
@@ -707,6 +885,89 @@ ORDER BY first_block_number ASC";
         if (cell is long l) return new BigInteger(l);
         if (cell is int i) return new BigInteger(i);
         return null;
+    }
+
+    /// <summary>
+    /// Resolve a CRC v2 ERC1155 token id to its avatar address. Circles uses
+    /// toTokenId(avatar) = uint256(uint160(avatar)), so the avatar is the low 160 bits,
+    /// rendered as 0x + 40 lowercase hex.
+    /// </summary>
+    public static string ToAvatarAddress(BigInteger tokenId)
+    {
+        if (tokenId.Sign < 0) tokenId = -tokenId; // token ids are unsigned; be defensive
+        BigInteger mask = (BigInteger.One << 160) - 1;
+        BigInteger low = tokenId & mask;
+
+        byte[] be = low.ToByteArray(isUnsigned: true, isBigEndian: true);
+        var addr = new byte[20];
+        int copy = Math.Min(be.Length, 20);
+        Array.Copy(be, be.Length - copy, addr, 20 - copy, copy);
+        return "0x" + Convert.ToHexString(addr).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Canonicalize an address for comparison: trimmed, lowercased, 0x-prefixed. Ensures a
+    /// checksummed or un-prefixed trustReceiver from the indexer still matches ToAvatarAddress output.
+    /// </summary>
+    internal static string NormalizeAvatar(string addr)
+    {
+        var s = addr.Trim().ToLowerInvariant();
+        if (!s.StartsWith("0x", StringComparison.Ordinal)) s = "0x" + s;
+        return s;
+    }
+
+    /// <summary>
+    /// Reduce CrcV2_PaymentGateway.TrustUpdated rows for a single gateway into the set of avatar
+    /// addresses the gateway currently trusts. The latest row per trustReceiver wins — selected by
+    /// explicit (blockNumber, transactionIndex, logIndex) comparison rather than relying on input
+    /// ordering (mirrors the core-app reference reducer) — and a receiver is active when its expiry
+    /// (unix seconds) is strictly in the future relative to nowUnix.
+    /// </summary>
+    internal static HashSet<string> ParseActiveTrustSet(string[] cols, object[][] rows, long nowUnix)
+    {
+        var set = new HashSet<string>();
+        if (rows.Length == 0) return set;
+
+        int Col(string n) => Array.FindIndex(cols, c => string.Equals(c, n, StringComparison.OrdinalIgnoreCase));
+        var itr = Col("trustReceiver");
+        var iexp = Col("expiry");
+        if (itr < 0 || iexp < 0) return set;
+        var ib = Col("blockNumber");
+        var itx = Col("transactionIndex");
+        var il = Col("logIndex");
+
+        long Pos(object[] row, int idx)
+        {
+            if (idx < 0 || idx >= row.Length) return 0;
+            try { return ToInt64(row[idx]); }
+            catch { return 0; }
+        }
+
+        var latest = new Dictionary<string, (BigInteger Expiry, long Block, long Tx, long Log)>();
+        foreach (var row in rows)
+        {
+            if (itr >= row.Length || iexp >= row.Length) continue;
+            var receiver = ToStringOrNull(row[itr]);
+            if (string.IsNullOrWhiteSpace(receiver)) continue;
+            receiver = NormalizeAvatar(receiver);
+
+            var expiry = ParseUintToBigInteger(row[iexp]) ?? BigInteger.Zero;
+            long b = Pos(row, ib), t = Pos(row, itx), l = Pos(row, il);
+
+            if (!latest.TryGetValue(receiver, out var prev)
+                || b > prev.Block
+                || (b == prev.Block && (t > prev.Tx || (t == prev.Tx && l > prev.Log))))
+            {
+                latest[receiver] = (expiry, b, t, l);
+            }
+        }
+
+        foreach (var kv in latest)
+        {
+            if (kv.Value.Expiry > nowUnix) set.Add(kv.Key);
+        }
+
+        return set;
     }
 
     private static string? TryDecodePaymentRef(object? cell)
