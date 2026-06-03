@@ -3,7 +3,7 @@
 
 SHELL := /bin/bash
 COMPOSE := docker compose --project-directory deployment
-SLN := Circles.Market/Circles.Market.sln
+SLN := Circles.Market.sln
 
 # ─── Docker Compose ──────────────────────────────────────────────────────────
 

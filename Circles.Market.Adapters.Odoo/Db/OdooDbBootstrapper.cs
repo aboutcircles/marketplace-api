@@ -1,3 +1,4 @@
+using Circles.Market.Shared.Db;
 using Npgsql;
 
 namespace Circles.Market.Adapters.Odoo.Db;
@@ -92,5 +93,8 @@ CREATE INDEX IF NOT EXISTS ix_inventory_stock_lookup
             _log.LogCritical(ex, "Failed to ensure Odoo schema. Service cannot start.");
             throw;
         }
+
+        // Best-effort, non-fatal: immunize index-key identifier columns against glibc collation drift.
+        await IdentifierCollation.EnsureIndexKeyTextColumnsCollatedToCAsync(_connString, _log, "odoo", ct);
     }
 }

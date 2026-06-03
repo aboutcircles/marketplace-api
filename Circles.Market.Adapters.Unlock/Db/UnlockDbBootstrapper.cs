@@ -1,3 +1,4 @@
+using Circles.Market.Shared.Db;
 using Npgsql;
 
 namespace Circles.Market.Adapters.Unlock.Db;
@@ -98,5 +99,8 @@ CREATE INDEX IF NOT EXISTS ix_unlock_mints_sold_lookup
 
         await cmd.ExecuteNonQueryAsync(ct);
         _log.LogInformation("EnsureSchemaAsync completed successfully for Unlock adapter.");
+
+        // Best-effort, non-fatal: immunize index-key identifier columns against glibc collation drift.
+        await IdentifierCollation.EnsureIndexKeyTextColumnsCollatedToCAsync(_connString, _log, "unlock", ct);
     }
 }
