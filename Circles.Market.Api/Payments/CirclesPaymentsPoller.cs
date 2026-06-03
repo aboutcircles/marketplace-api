@@ -67,6 +67,22 @@ public sealed class CirclesPaymentsPoller : BackgroundService
     // re-query the gateway's on-chain trust list on every transfer.
     private readonly Dictionary<string, (HashSet<string> Set, DateTimeOffset FetchedAt)> _trustCache = new();
 
+    // Leader election: with multiple market-api nodes sharing one DB, only the lease holder runs the
+    // poll/settle/reconcile work so the instances don't race on the same payment rows. Lease-based
+    // (not session advisory locks) because the DB is reached via pgbouncer transaction pooling, where
+    // session-scoped locks are unreliable. A dead leader's lease expires and a peer takes over.
+    private const string PollerName = "payments";
+    private readonly bool _leaderElection;
+    private readonly string _instanceId;
+    private readonly int _leaseSeconds;
+    private bool _wasLeader;
+
+    // Settlement reconciliation: periodically re-drive orders that are unpaid despite already holding
+    // enough eligible (gateway-trusted) transfer value — self-heals the "payment observed before its
+    // order existed" race that the one-shot observe-time match would otherwise strand. 0 disables.
+    private readonly int _reconcileSeconds;
+    private DateTimeOffset _lastReconcileAt = DateTimeOffset.MinValue;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true
@@ -127,6 +143,17 @@ public sealed class CirclesPaymentsPoller : BackgroundService
             : 60;
         _trustCacheTtl = TimeSpan.FromSeconds(Math.Max(1, trustTtl));
 
+        // Leader election is on by default; set PAYMENTS_LEADER_ELECTION=false for single-instance/dev.
+        _leaderElection = !string.Equals(Environment.GetEnvironmentVariable("PAYMENTS_LEADER_ELECTION"), "false",
+            StringComparison.OrdinalIgnoreCase);
+        _instanceId = $"{Environment.MachineName}:{Guid.NewGuid():N}";
+        _leaseSeconds = ComputeLeaseSeconds((int)_interval.TotalSeconds,
+            Environment.GetEnvironmentVariable("PAYMENTS_LEASE_SECONDS"));
+        // Reconciliation cadence (seconds); 0 disables. Defaults to 60s.
+        _reconcileSeconds = int.TryParse(Environment.GetEnvironmentVariable("PAYMENTS_RECONCILE_SECONDS"), out var rs)
+            ? Math.Max(0, rs)
+            : 60;
+
         bool allowListEmpty = _gatewayAllowList is null || _gatewayAllowList.Count == 0;
         if (allowListEmpty)
         {
@@ -145,10 +172,17 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         try
         {
             await EnsureCursorTableAsync(stoppingToken);
+            if (_leaderElection)
+            {
+                await EnsureLeaderTableAsync(stoppingToken);
+                _log.LogInformation(
+                    "Payments poller leader election enabled (instance {Instance}, lease {Lease}s)",
+                    _instanceId, _leaseSeconds);
+            }
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Failed to ensure payments_cursors table");
+            _log.LogError(ex, "Failed to ensure payments poller tables");
             throw;
         }
 
@@ -159,7 +193,26 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         {
             try
             {
-                await TickAsync(http, stoppingToken);
+                bool isLeader = !_leaderElection || await TryAcquireLeadershipAsync(stoppingToken);
+                if (_leaderElection && isLeader != _wasLeader)
+                {
+                    // Log only on transitions so "who is leading" is visible at Info without per-cycle noise.
+                    _log.LogInformation(isLeader
+                        ? "Payments poller acquired leadership (instance {Instance})"
+                        : "Payments poller lost leadership (instance {Instance}); another instance is leading",
+                        _instanceId);
+                    _wasLeader = isLeader;
+                }
+
+                if (isLeader)
+                {
+                    await TickAsync(http, stoppingToken);
+                    await MaybeReconcileAsync(stoppingToken);
+                }
+                else
+                {
+                    _log.LogDebug("Payments poller is a follower this cycle; another instance holds the lease");
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -178,6 +231,49 @@ public sealed class CirclesPaymentsPoller : BackgroundService
             {
                 break;
             }
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        // Release our lease on graceful shutdown (e.g. rolling deploy drain) so a peer takes over
+        // immediately instead of waiting for the lease to expire. Use an independent short timeout, not
+        // the host shutdown token (which is typically already cancelling), so the release actually runs.
+        if (_leaderElection)
+        {
+            try
+            {
+                using var releaseCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await ReleaseLeadershipAsync(releaseCts.Token);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex,
+                    "Failed to release payments poller lease on shutdown; a peer will take over after lease expiry");
+            }
+        }
+
+        await base.StopAsync(cancellationToken);
+    }
+
+    private async Task MaybeReconcileAsync(CancellationToken ct)
+    {
+        if (_reconcileSeconds <= 0) return;
+        if (DateTimeOffset.UtcNow - _lastReconcileAt < TimeSpan.FromSeconds(_reconcileSeconds)) return;
+        // Stamp before running so a slow or failing pass is rate-limited rather than hot-looping.
+        _lastReconcileAt = DateTimeOffset.UtcNow;
+
+        // Renew/confirm leadership immediately before this heavier pass: a tick that consumed most of
+        // the lease window must not let us reconcile after a peer has already taken over.
+        if (_leaderElection && !await TryAcquireLeadershipAsync(ct)) return;
+
+        try
+        {
+            await ReconcileStrandedOrdersAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Settlement reconciliation pass failed");
         }
     }
 
@@ -650,6 +746,22 @@ ORDER BY first_block_number ASC";
     }
 
     /// <summary>
+    /// Lease duration (seconds) for leader election. The lease must comfortably outlive a full work
+    /// cycle (a poll tick plus the periodic reconcile batch), not just the poll sleep, so a slow cycle
+    /// cannot let the lease lapse mid-work. With no override the floor is max(30, 6x poll interval). An
+    /// explicit PAYMENTS_LEASE_SECONDS is honoured but still floored to one second past the poll interval
+    /// so it can never be shorter than a single cycle; the leader additionally renews the lease right
+    /// before the heavier reconcile pass.
+    /// </summary>
+    internal static int ComputeLeaseSeconds(int pollSeconds, string? leaseEnv)
+    {
+        var poll = Math.Max(1, pollSeconds);
+        var floor = poll + 1;
+        var defaultLease = Math.Max(30, poll * 6);
+        return int.TryParse(leaseEnv, out var ls) ? Math.Max(floor, ls) : defaultLease;
+    }
+
+    /// <summary>
     /// Decide a transfer's token-trust eligibility against a gateway trust set:
     /// null trust set (unavailable) or missing token avatar → undetermined (null);
     /// otherwise true iff the token's avatar is in the trusted set.
@@ -1109,5 +1221,134 @@ ON CONFLICT (chain_id) DO UPDATE SET last_block_number=@b, last_transaction_inde
         cmd.Parameters.AddWithValue("@t", txi);
         cmd.Parameters.AddWithValue("@l", log);
         await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private async Task EnsureLeaderTableAsync(CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(_pgConn);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"CREATE TABLE IF NOT EXISTS poller_leader (
+  poller_name      text        PRIMARY KEY,
+  instance_id      text        NOT NULL,
+  lease_expires_at timestamptz NOT NULL
+);";
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Lease-based leader election. Returns true iff this instance holds the poller lease for the next
+    /// window. A single atomic UPSERT, so it is correct under pgbouncer transaction pooling (where
+    /// session-scoped advisory locks are unreliable). The conflicting UPDATE only fires when the current
+    /// lease has expired or is already ours, so a returned row unambiguously means we are the leader.
+    /// </summary>
+    private async Task<bool> TryAcquireLeadershipAsync(CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(_pgConn);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+INSERT INTO poller_leader (poller_name, instance_id, lease_expires_at)
+VALUES (@name, @me, now() + make_interval(secs => @lease))
+ON CONFLICT (poller_name) DO UPDATE
+  SET instance_id      = EXCLUDED.instance_id,
+      lease_expires_at = EXCLUDED.lease_expires_at
+  WHERE poller_leader.lease_expires_at < now()
+     OR poller_leader.instance_id = EXCLUDED.instance_id
+RETURNING instance_id;";
+        cmd.Parameters.AddWithValue("@name", PollerName);
+        cmd.Parameters.AddWithValue("@me", _instanceId);
+        cmd.Parameters.AddWithValue("@lease", (double)_leaseSeconds);
+        var result = await cmd.ExecuteScalarAsync(ct);
+        // A returned instance_id means we inserted, renewed, or took over an expired lease. Null means a
+        // valid lease is held by another instance — we are a follower this cycle.
+        return result is string;
+    }
+
+    private async Task ReleaseLeadershipAsync(CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(_pgConn);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        // Expire only our own lease; no-op if a peer already owns it.
+        cmd.CommandText =
+            "UPDATE poller_leader SET lease_expires_at = now() WHERE poller_name=@name AND instance_id=@me;";
+        cmd.Parameters.AddWithValue("@name", PollerName);
+        cmd.Parameters.AddWithValue("@me", _instanceId);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Defense-in-depth: re-drive settlement for orders that are still unpaid (paid_at IS NULL) yet
+    /// already hold enough eligible (gateway-trusted) transfer value to cover the order total. This
+    /// self-heals the "payment observed before its order existed" race, where the one-shot observe-time
+    /// match missed and nothing else retries. Re-driving through HandleObservedTransferAsync re-aggregates
+    /// and marks the order paid; already-paid orders are excluded by the paid_at IS NULL filter, and the
+    /// transfer upsert is idempotent.
+    /// </summary>
+    private async Task ReconcileStrandedOrdersAsync(CancellationToken ct)
+    {
+        var references = new List<string>();
+        await using (var conn = new NpgsqlConnection(_pgConn))
+        {
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            // Only orders with an explicit price that the eligible transfer total meets are re-driven.
+            // Price-less orders (expected NULL) are deliberately NOT reconciled here: the observe-time
+            // path auto-settles them on any transfer, a behavior already flagged for review as a bypass,
+            // so reconciliation does not propagate it. The wei threshold matches TryMarkPaidByReference.
+            cmd.CommandText = @"
+SELECT o.payment_reference
+FROM orders o
+JOIN (
+  SELECT chain_id, payment_reference,
+         SUM(amount_wei) FILTER (WHERE eligible IS TRUE) AS eligible_sum
+  FROM payment_transfers
+  WHERE chain_id = @chain
+  GROUP BY chain_id, payment_reference
+) t ON t.payment_reference = o.payment_reference AND t.chain_id = @chain
+WHERE o.paid_at IS NULL
+  AND o.payment_reference IS NOT NULL
+  AND t.eligible_sum IS NOT NULL
+  -- Guard the cast: only well-formed numeric prices, so one malformed order_json can't error the pass.
+  AND (o.order_json->'totalPaymentDue'->>'price') ~ '^[0-9]+(\.[0-9]+)?$'
+  AND t.eligible_sum >= ((o.order_json->'totalPaymentDue'->>'price')::numeric * 1000000000000000000)
+LIMIT 200;";
+            cmd.Parameters.AddWithValue("@chain", _chainId);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                if (!r.IsDBNull(0)) references.Add(r.GetString(0));
+            }
+        }
+
+        if (references.Count == 0) return;
+        _log.LogWarning(
+            "Reconciliation found {Count} unpaid order(s) with sufficient eligible payment; re-driving settlement",
+            references.Count);
+
+        foreach (var reference in references)
+        {
+            ct.ThrowIfCancellationRequested();
+            var eligibleTransfer = _payments.GetTransfersByReference(_chainId, reference)
+                .FirstOrDefault(t => t.Eligible == true);
+            if (eligibleTransfer is null)
+            {
+                // The SELECT guarantees an eligible transfer exists for this reference, so a miss here
+                // signals real data drift (transfer changed/removed between the two queries) — surface it.
+                _log.LogWarning(
+                    "Reconciliation: no eligible transfer for reference {Ref} despite a qualifying eligible sum",
+                    reference);
+                continue;
+            }
+            // Re-run the standard observe -> aggregate -> settle path; idempotent for the existing row.
+            // Re-aggregation re-reads ALL transfers for the reference, so multi-transfer orders still
+            // settle on the full total even though we feed it a single eligible transfer. Count the
+            // metric only when this actually marked an order paid, so it reflects real settlements.
+            if (await _paymentFlow.HandleObservedTransferAsync(eligibleTransfer, ct))
+            {
+                Metrics.MarketplaceMetrics.PaymentsReconciled.Inc();
+            }
+        }
     }
 }

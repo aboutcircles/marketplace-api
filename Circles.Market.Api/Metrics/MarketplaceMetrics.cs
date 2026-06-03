@@ -28,6 +28,10 @@ public static class MarketplaceMetrics
         "marketplace_gateway_trust_fetch_failures_total",
         "Failures fetching a gateway's on-chain trust list; affected payments stay undetermined until it recovers");
 
+    public static readonly Counter PaymentsReconciled = Prometheus.Metrics.CreateCounter(
+        "marketplace_payments_reconciled_total",
+        "Orders re-driven to settlement by the reconciliation pass (were unpaid despite sufficient eligible payment); a sustained nonzero rate signals an upstream observe-time matching gap");
+
     public static readonly Histogram OrderValueCrc = Prometheus.Metrics.CreateHistogram(
         "marketplace_order_value_crc",
         "Distribution of order values in CRC",
