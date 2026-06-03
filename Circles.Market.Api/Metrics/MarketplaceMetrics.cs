@@ -32,6 +32,11 @@ public static class MarketplaceMetrics
         "marketplace_payments_reconciled_total",
         "Orders re-driven to settlement by the reconciliation pass (were unpaid despite sufficient eligible payment); a sustained nonzero rate signals an upstream observe-time matching gap");
 
+    public static readonly Counter SchemaCollationMigrationFailures = Prometheus.Metrics.CreateCounter(
+        "marketplace_schema_collation_migration_failures_total",
+        "Best-effort COLLATE \"C\" identifier-column migration failed on startup (non-fatal). A nonzero value means identifier columns remain on a locale collation and are still exposed to glibc collation drift — most importantly a duplicate-key error here indicates live duplicate rows under a unique index. Alert on this; investigate for duplicates rather than ignore.",
+        new CounterConfiguration { LabelNames = new[] { "store" } });
+
     public static readonly Histogram OrderValueCrc = Prometheus.Metrics.CreateHistogram(
         "marketplace_order_value_crc",
         "Distribution of order values in CRC",

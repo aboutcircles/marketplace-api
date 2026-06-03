@@ -253,6 +253,56 @@ CREATE INDEX IF NOT EXISTS ix_one_off_sales_order_id
             _logger.LogCritical(ex, "FATAL: Failed to ensure Postgres schema for orders");
             throw;
         }
+
+        // Best-effort hardening (non-fatal): immunize identifier columns against glibc collation drift.
+        EnsureIdentifierCollationsToC();
+    }
+
+    // Pin ASCII identifier columns to COLLATE "C" (raw byte ordering, encoding/locale independent).
+    // Rationale: a glibc collation change silently corrupted a unique btree index in prod —
+    // byte-identical keys slipped past the uniqueness check, producing duplicate rows under a
+    // valid index. "C" cannot drift across libc versions, so these columns become permanently
+    // immune. Self-discovering + idempotent: only text columns not already "C" are selected, so
+    // it applies once then no-ops on every subsequent start. Best-effort: it takes a brief
+    // ACCESS EXCLUSIVE lock to rebuild dependent indexes, bounded by lock_timeout, and never
+    // fails the boot — if it can't apply this start it retries on the next one.
+    private void EnsureIdentifierCollationsToC()
+    {
+        const string sql = @"
+DO $$ DECLARE r record; BEGIN
+  PERFORM set_config('lock_timeout', '3s', true);
+  FOR r IN
+    SELECT c.relname AS tbl, a.attname AS col
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_collation co ON co.oid = a.attcollation
+    WHERE n.nspname = 'public'
+      AND c.relname = ANY (ARRAY['orders','orders_status_history','order_outbox','order_sellers','order_line_sellers','one_off_sales'])
+      AND a.attnum > 0 AND NOT a.attisdropped
+      AND a.atttypid = 'text'::regtype
+      AND co.collname <> 'C'
+  LOOP
+    EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I TYPE text COLLATE ""C""', r.tbl, r.col);
+    RAISE NOTICE 'collation->C: %.%', r.tbl, r.col;
+  END LOOP;
+END $$;";
+        try
+        {
+            using var conn = new NpgsqlConnection(_connString);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+            cmd.ExecuteNonQuery();
+            _logger.LogInformation("Identifier collation (COLLATE \"C\") ensured for order tables.");
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal, but make it observable: a duplicate-key error here means live duplicate
+            // rows under a unique index (drift already struck) — alert on this metric, don't ignore.
+            Circles.Market.Api.Metrics.MarketplaceMetrics.SchemaCollationMigrationFailures.WithLabels("orders").Inc();
+            _logger.LogWarning(ex, "Non-fatal: could not ensure COLLATE \"C\" on order identifier columns; will retry next start.");
+        }
     }
 
     public bool Create(string orderId, string basketId, OrderSnapshot order)
