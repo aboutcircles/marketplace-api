@@ -1,3 +1,4 @@
+using Circles.Market.Shared.Db;
 using Npgsql;
 using System.Security.Cryptography;
 using System.Text;
@@ -212,6 +213,9 @@ WHERE tc.table_name='code_mappings' AND tc.constraint_type='FOREIGN KEY' AND ccu
             _log.LogCritical(ex, "FATAL: EnsureSchemaAsync failed for CodeDispenser.");
             throw;
         }
+
+        // Best-effort, non-fatal: immunize index-key identifier columns against glibc collation drift.
+        await IdentifierCollation.EnsureIndexKeyTextColumnsCollatedToCAsync(_connString, _log, "codedisp", ct);
     }
 
     public async Task SeedFromDirAsync(string? poolsDir, CancellationToken ct)

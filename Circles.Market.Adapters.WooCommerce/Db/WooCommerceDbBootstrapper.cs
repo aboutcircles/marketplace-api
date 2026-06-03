@@ -1,3 +1,4 @@
+using Circles.Market.Shared.Db;
 using Npgsql;
 
 namespace Circles.Market.Adapters.WooCommerce.Db;
@@ -143,5 +144,8 @@ public sealed class WooCommerceDbBootstrapper
             _log.LogCritical(ex, "Failed to ensure WooCommerce schema. Service cannot start.");
             throw;
         }
+
+        // Best-effort, non-fatal: immunize index-key identifier columns against glibc collation drift.
+        await IdentifierCollation.EnsureIndexKeyTextColumnsCollatedToCAsync(_connString, _log, "woocommerce", ct);
     }
 }
