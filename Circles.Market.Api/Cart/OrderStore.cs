@@ -258,33 +258,45 @@ CREATE INDEX IF NOT EXISTS ix_one_off_sales_order_id
         EnsureIdentifierCollationsToC();
     }
 
-    // Pin ASCII identifier columns to COLLATE "C" (raw byte ordering, encoding/locale independent).
-    // Rationale: a glibc collation change silently corrupted a unique btree index in prod —
-    // byte-identical keys slipped past the uniqueness check, producing duplicate rows under a
-    // valid index. "C" cannot drift across libc versions, so these columns become permanently
-    // immune. Self-discovering + idempotent: only text columns not already "C" are selected, so
-    // it applies once then no-ops on every subsequent start. Best-effort: it takes a brief
-    // ACCESS EXCLUSIVE lock to rebuild dependent indexes, bounded by lock_timeout, and never
-    // fails the boot — if it can't apply this start it retries on the next one.
+    // Pin index-key ASCII identifier columns to COLLATE "C" (raw byte ordering, locale/encoding
+    // independent). Rationale: a glibc collation change silently corrupted a unique btree index in
+    // prod — byte-identical keys slipped past the uniqueness check, producing duplicate rows under a
+    // valid index. Collation drift can only corrupt INDEX KEYS, so we target exactly those text
+    // columns (PK / unique / lookup keys); "C" cannot drift across libc versions, making them
+    // permanently immune. Self-discovering + idempotent: only index-key text columns not already "C"
+    // are selected, so it applies once then no-ops on every subsequent start. Each column is converted
+    // in its own sub-transaction: a duplicate-key failure (real drift) aborts and surfaces (metric +
+    // alert), while a benign dependency error (e.g. a column named in a trigger's UPDATE OF list, such
+    // as orders.status — which is not an index key anyway) is skipped with a warning so it can't block
+    // the other columns. Best-effort: brief ACCESS EXCLUSIVE lock to rebuild dependent indexes,
+    // bounded by lock_timeout; never fails the boot.
     private void EnsureIdentifierCollationsToC()
     {
         const string sql = @"
 DO $$ DECLARE r record; BEGIN
   PERFORM set_config('lock_timeout', '3s', true);
   FOR r IN
-    SELECT c.relname AS tbl, a.attname AS col
+    SELECT DISTINCT c.relname AS tbl, a.attname AS col
     FROM pg_attribute a
     JOIN pg_class c ON c.oid = a.attrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_collation co ON co.oid = a.attcollation
+    JOIN pg_index i ON i.indrelid = c.oid AND a.attnum = ANY (i.indkey)
     WHERE n.nspname = 'public'
       AND c.relname = ANY (ARRAY['orders','orders_status_history','order_outbox','order_sellers','order_line_sellers','one_off_sales'])
       AND a.attnum > 0 AND NOT a.attisdropped
       AND a.atttypid = 'text'::regtype
       AND co.collname <> 'C'
   LOOP
-    EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I TYPE text COLLATE ""C""', r.tbl, r.col);
-    RAISE NOTICE 'collation->C: %.%', r.tbl, r.col;
+    BEGIN
+      EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I TYPE text COLLATE ""C""', r.tbl, r.col);
+      RAISE NOTICE 'collation->C: %.%', r.tbl, r.col;
+    EXCEPTION
+      WHEN unique_violation THEN
+        RAISE;  -- live duplicate rows under a unique index = real collation drift: abort + alert
+      WHEN others THEN
+        RAISE WARNING 'collation->C skipped %.% (dependency): %', r.tbl, r.col, SQLERRM;
+    END;
   END LOOP;
 END $$;";
         try
