@@ -25,7 +25,7 @@ public sealed class OrderPaymentFlow : IOrderPaymentFlow
         _log = log ?? throw new ArgumentNullException(nameof(log));
     }
 
-    public Task HandleObservedTransferAsync(PaymentTransferRecord transfer, CancellationToken ct = default)
+    public Task<bool> HandleObservedTransferAsync(PaymentTransferRecord transfer, CancellationToken ct = default)
     {
         if (transfer is null)
         {
@@ -84,7 +84,7 @@ public sealed class OrderPaymentFlow : IOrderPaymentFlow
         }
 
         var aggregated = _payments.UpsertAndGetPayment(transfer.ChainId, transfer.PaymentReference);
-        if (aggregated is null) return Task.CompletedTask;
+        if (aggregated is null) return Task.FromResult(false);
 
         bool hasPaymentReference = !string.IsNullOrWhiteSpace(aggregated.PaymentReference);
         if (!hasPaymentReference)
@@ -101,7 +101,7 @@ public sealed class OrderPaymentFlow : IOrderPaymentFlow
                 ReasonCode: "missing_payment_reference",
                 Message: "Aggregated payment had no payment reference",
                 Details: null));
-            return Task.CompletedTask;
+            return Task.FromResult(false);
         }
 
         bool changed = _orders.TryMarkPaidByReference(
@@ -173,7 +173,7 @@ public sealed class OrderPaymentFlow : IOrderPaymentFlow
             }), ct);
         }
 
-        return Task.CompletedTask;
+        return Task.FromResult(changed);
     }
 
     public Task HandleConfirmedAsync(

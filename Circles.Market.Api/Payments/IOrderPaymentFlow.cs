@@ -5,9 +5,10 @@ public interface IOrderPaymentFlow
     /// <summary>
     /// Called whenever a payment log is observed on-chain.
     /// Responsible for persisting the payment and attempting to mark
-    /// the corresponding order as paid.
+    /// the corresponding order as paid. Returns true iff this call transitioned an order to paid
+    /// (so callers like the reconciliation pass can count real settlements, not mere re-drives).
     /// </summary>
-    Task HandleObservedTransferAsync(PaymentTransferRecord transfer, CancellationToken ct = default);
+    Task<bool> HandleObservedTransferAsync(PaymentTransferRecord transfer, CancellationToken ct = default);
 
     /// <summary>
     /// Optional intermediate stage: called when a payment is considered
