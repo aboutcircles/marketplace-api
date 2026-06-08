@@ -169,3 +169,64 @@ public sealed class AdminCodePoolDto
     [JsonPropertyName("poolId")] public string PoolId { get; set; } = string.Empty;
     [JsonPropertyName("remaining")] public long Remaining { get; set; }
 }
+
+// ── WooCommerce ──────────────────────────────────────────────────────────────
+
+public sealed class AdminWcConnectionUpsertRequest
+{
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
+    [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
+    [JsonPropertyName("wcBaseUrl")] public string WcBaseUrl { get; set; } = string.Empty;
+    [JsonPropertyName("wcConsumerKey")] public string WcConsumerKey { get; set; } = string.Empty;
+    [JsonPropertyName("wcConsumerSecret")] public string WcConsumerSecret { get; set; } = string.Empty;
+    [JsonPropertyName("defaultCustomerId")] public int? DefaultCustomerId { get; set; }
+    [JsonPropertyName("orderStatus")] public string OrderStatus { get; set; } = "pending";
+    [JsonPropertyName("timeoutMs")] public int TimeoutMs { get; set; } = 30000;
+    [JsonPropertyName("fulfillInheritRequestAbort")] public bool FulfillInheritRequestAbort { get; set; } = true;
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+}
+
+public sealed class AdminWcConnectionDto
+{
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
+    [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
+    [JsonPropertyName("wcBaseUrl")] public string WcBaseUrl { get; set; } = string.Empty;
+    [JsonPropertyName("wcConsumerKey")] public string WcConsumerKey { get; set; } = string.Empty;
+    [JsonPropertyName("defaultCustomerId")] public int? DefaultCustomerId { get; set; }
+    [JsonPropertyName("orderStatus")] public string OrderStatus { get; set; } = string.Empty;
+    [JsonPropertyName("timeoutMs")] public int TimeoutMs { get; set; }
+    [JsonPropertyName("fulfillInheritRequestAbort")] public bool FulfillInheritRequestAbort { get; set; }
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    [JsonPropertyName("revokedAt")] public DateTimeOffset? RevokedAt { get; set; }
+}
+
+public sealed class AddWcProductRequest
+{
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
+    [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
+    [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
+    [JsonPropertyName("wcProductSku")] public string WcProductSku { get; set; } = string.Empty;
+    [JsonPropertyName("wcProductId")] public int? WcProductId { get; set; }
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+}
+
+public sealed class AdminWcProductDto
+{
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
+    [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
+    [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
+    [JsonPropertyName("wcProductSku")] public string WcProductSku { get; set; } = string.Empty;
+    [JsonPropertyName("wcProductId")] public int? WcProductId { get; set; }
+    [JsonPropertyName("totalInventory")] public long? TotalInventory { get; set; }
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    [JsonPropertyName("revokedAt")] public DateTimeOffset? RevokedAt { get; set; }
+}
+
+public sealed class AdminWcStockUpsertRequest
+{
+    [JsonPropertyName("chainId")] public long ChainId { get; set; }
+    [JsonPropertyName("seller")] public string Seller { get; set; } = string.Empty;
+    [JsonPropertyName("sku")] public string Sku { get; set; } = string.Empty;
+    [JsonPropertyName("stockQuantity")] public int StockQuantity { get; set; }
+}

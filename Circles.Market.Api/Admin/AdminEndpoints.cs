@@ -892,5 +892,318 @@ RETURNING total_inventory";
 
             return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "unlock", totalInventory = savedTotalInventory });
         });
+
+        // ── WooCommerce ──────────────────────────────────────────────────────
+
+        group.MapGet("/wc-connections", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            var (ok, connections) = await TryGetJsonAsync<List<AdminWcConnectionDto>>(wcClient, "/admin/connections", bearerHeader, ct);
+            if (!ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(connections ?? new List<AdminWcConnectionDto>());
+        });
+
+        group.MapPut("/wc-connections", async (HttpContext ctx, AdminWcConnectionUpsertRequest req, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.WcBaseUrl) ||
+                string.IsNullOrWhiteSpace(req.WcConsumerKey) || string.IsNullOrWhiteSpace(req.WcConsumerSecret))
+                return Results.BadRequest(new { error = "seller, wcBaseUrl, wcConsumerKey, wcConsumerSecret are required" });
+
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string seller = req.Seller.Trim().ToLowerInvariant();
+            int timeout = Math.Clamp(req.TimeoutMs, 1000, 300000);
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            var payload = new
+            {
+                chainId = req.ChainId,
+                seller,
+                wcBaseUrl = req.WcBaseUrl.Trim(),
+                wcConsumerKey = req.WcConsumerKey.Trim(),
+                wcConsumerSecret = req.WcConsumerSecret.Trim(),
+                defaultCustomerId = req.DefaultCustomerId,
+                orderStatus = req.OrderStatus,
+                timeoutMs = timeout,
+                fulfillInheritRequestAbort = req.FulfillInheritRequestAbort,
+                enabled = req.Enabled
+            };
+
+            using var connRequest = new HttpRequestMessage(HttpMethod.Put, "/admin/connections")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            connRequest.Headers.Authorization = bearerHeader;
+
+            using var connResponse = await wcClient.SendAsync(connRequest, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!connResponse.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            string consumerKey = req.WcConsumerKey.Trim();
+            string maskedKey = string.IsNullOrEmpty(consumerKey) || consumerKey.Length < 6
+                ? "***"
+                : consumerKey[..2] + new string('*', consumerKey.Length - 4) + consumerKey[^2..];
+
+            return Results.Json(new AdminWcConnectionDto
+            {
+                ChainId = req.ChainId,
+                Seller = seller,
+                WcBaseUrl = req.WcBaseUrl.Trim(),
+                WcConsumerKey = maskedKey,
+                DefaultCustomerId = req.DefaultCustomerId,
+                OrderStatus = req.OrderStatus,
+                TimeoutMs = timeout,
+                FulfillInheritRequestAbort = req.FulfillInheritRequestAbort,
+                Enabled = req.Enabled,
+                RevokedAt = req.Enabled ? null : DateTimeOffset.UtcNow
+            });
+        });
+
+        group.MapDelete("/wc-connections/{chainId:long}/{seller}", async (HttpContext ctx, long chainId, string seller, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller)) return Results.BadRequest(new { error = "seller is required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Delete,
+                $"/admin/connections/{chainId}/{Uri.EscapeDataString(sellerNorm)}");
+            req.Headers.Authorization = bearerHeader;
+            using var resp = await wcClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return Results.NotFound(new { error = "connection not found" });
+            if (!resp.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            return Results.Json(new { ok = true });
+        });
+
+        group.MapGet("/wc-products", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            var (ok, mappings) = await TryGetJsonAsync<List<AdminWcProductDto>>(wcClient, "/admin/mappings", bearerHeader, ct);
+            if (!ok) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            var totals = await LoadRouteTotalInventoryByOfferTypeAsync(marketConn, "woocommerce", ct);
+            if (mappings != null)
+            {
+                foreach (var m in mappings)
+                {
+                    string key = $"{m.ChainId}:{m.Seller.Trim().ToLowerInvariant()}:{m.Sku.Trim().ToLowerInvariant()}";
+                    if (totals.TryGetValue(key, out var total))
+                        m.TotalInventory = total;
+                }
+            }
+
+            return Results.Json(mappings ?? new List<AdminWcProductDto>());
+        });
+
+        group.MapPost("/wc-products", async (HttpContext ctx, AddWcProductRequest req, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku) || string.IsNullOrWhiteSpace(req.WcProductSku))
+                return Results.BadRequest(new { error = "seller, sku, wcProductSku are required" });
+            if (req.TotalInventory is < 0) return Results.BadRequest(new { error = "totalInventory must be >= 0" });
+
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string seller = req.Seller.Trim().ToLowerInvariant();
+            string sku = req.Sku.Trim().ToLowerInvariant();
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+
+            var (connOk, connections) = await TryGetJsonAsync<List<AdminWcConnectionDto>>(wcClient, "/admin/connections", bearerHeader, ct);
+            if (!connOk) return Results.StatusCode(StatusCodes.Status502BadGateway);
+            bool hasConnection = connections?.Any(c => c.ChainId == req.ChainId
+                                                       && string.Equals(c.Seller, seller, StringComparison.OrdinalIgnoreCase)
+                                                       && c.Enabled
+                                                       && c.RevokedAt == null) ?? false;
+            if (!hasConnection)
+                return Results.BadRequest(new { error = "no woocommerce connection configured for this chainId/seller" });
+
+            var mappingPayload = new
+            {
+                chainId = req.ChainId,
+                seller,
+                sku,
+                wcProductSku = req.WcProductSku.Trim(),
+                wcProductId = req.WcProductId,
+                enabled = req.Enabled
+            };
+            using var mappingRequest = new HttpRequestMessage(HttpMethod.Put, "/admin/mappings")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(mappingPayload), Encoding.UTF8, "application/json")
+            };
+            mappingRequest.Headers.Authorization = bearerHeader;
+
+            using var mappingResponse = await wcClient.SendAsync(mappingRequest, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!mappingResponse.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var market = new NpgsqlConnection(marketConn);
+            await market.OpenAsync(ct);
+            long? savedTotalInventory;
+            await using (var cmd = market.CreateCommand())
+            {
+                cmd.CommandText = @"INSERT INTO market_service_routes (chain_id, seller_address, sku, offer_type, is_one_off, total_inventory, enabled)
+VALUES ($1, $2, $3, 'woocommerce', false, $4, $5)
+ON CONFLICT (chain_id, seller_address, sku) DO UPDATE SET
+  offer_type = EXCLUDED.offer_type,
+  is_one_off = false,
+  total_inventory = EXCLUDED.total_inventory,
+  enabled = EXCLUDED.enabled
+RETURNING total_inventory";
+                cmd.Parameters.AddWithValue(req.ChainId);
+                cmd.Parameters.AddWithValue(seller);
+                cmd.Parameters.AddWithValue(sku);
+                cmd.Parameters.AddWithValue((object?)req.TotalInventory ?? DBNull.Value);
+                cmd.Parameters.AddWithValue(req.Enabled);
+                var scalar = await cmd.ExecuteScalarAsync(ct);
+                savedTotalInventory = scalar is DBNull || scalar is null ? null : (long?)Convert.ToInt64(scalar);
+            }
+
+            return Results.Json(new { ok = true, chainId = req.ChainId, seller, sku, offerType = "woocommerce", totalInventory = savedTotalInventory });
+        });
+
+        group.MapDelete("/wc-products/{chainId:long}/{seller}/{sku}", async (HttpContext ctx, long chainId, string seller, string sku, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Delete,
+                $"/admin/mappings/{chainId}/{Uri.EscapeDataString(sellerNorm)}/{Uri.EscapeDataString(skuNorm)}");
+            req.Headers.Authorization = bearerHeader;
+            using var resp = await wcClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return Results.NotFound(new { error = "mapping not found" });
+            if (!resp.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var conn = new NpgsqlConnection(marketConn);
+            await conn.OpenAsync(ct);
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = @"UPDATE market_service_routes SET enabled=false
+WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
+                cmd.Parameters.AddWithValue(chainId);
+                cmd.Parameters.AddWithValue(sellerNorm);
+                cmd.Parameters.AddWithValue(skuNorm);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            return Results.Json(new { ok = true });
+        });
+
+        group.MapGet("/wc-stock/{chainId:long}/{seller}/{sku}", async (HttpContext ctx, long chainId, string seller, string sku, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller) || string.IsNullOrWhiteSpace(sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+            string skuNorm = sku.Trim().ToLowerInvariant();
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                $"/admin/stock/{chainId}/{Uri.EscapeDataString(sellerNorm)}/{Uri.EscapeDataString(skuNorm)}");
+            req.Headers.Authorization = bearerHeader;
+            using var resp = await wcClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return Results.NotFound(new { error = "stock not configured" });
+            if (!resp.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            var payload = await JsonSerializer.DeserializeAsync<JsonElement>(stream, JsonOptions, ct);
+            return Results.Json(payload);
+        });
+
+        group.MapPut("/wc-stock", async (HttpContext ctx, AdminWcStockUpsertRequest req, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku))
+                return Results.BadRequest(new { error = "seller and sku are required" });
+            if (req.StockQuantity < -1) return Results.BadRequest(new { error = "stockQuantity must be >= -1 (-1 = unlimited)" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = req.Seller.Trim().ToLowerInvariant();
+            string skuNorm = req.Sku.Trim().ToLowerInvariant();
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            var payload = new { chainId = req.ChainId, seller = sellerNorm, sku = skuNorm, stockQuantity = req.StockQuantity };
+            using var upsertReq = new HttpRequestMessage(HttpMethod.Put, "/admin/stock")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            upsertReq.Headers.Authorization = bearerHeader;
+            using var upsertResp = await wcClient.SendAsync(upsertReq, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!upsertResp.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var stream = await upsertResp.Content.ReadAsStreamAsync(ct);
+            var body = await JsonSerializer.DeserializeAsync<JsonElement>(stream, JsonOptions, ct);
+            return Results.Json(body);
+        });
+
+        group.MapGet("/wc-product-catalog/{chainId:long}/{seller}", async (HttpContext ctx, long chainId, string seller, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (chainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
+            if (string.IsNullOrWhiteSpace(seller)) return Results.BadRequest(new { error = "seller is required" });
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            string sellerNorm = seller.Trim().ToLowerInvariant();
+
+            int perPage = 100;
+            if (ctx.Request.Query.TryGetValue("perPage", out var ppRaw) && int.TryParse(ppRaw, out var pp)) perPage = pp;
+            int offset = 0;
+            if (ctx.Request.Query.TryGetValue("offset", out var offRaw) && int.TryParse(offRaw, out var off)) offset = off;
+            string? skuFilter = ctx.Request.Query.TryGetValue("sku", out var skuRaw) ? skuRaw.ToString() : null;
+
+            var query = new Dictionary<string, string> { ["perPage"] = perPage.ToString(), ["offset"] = offset.ToString() };
+            if (!string.IsNullOrWhiteSpace(skuFilter)) query["sku"] = skuFilter;
+            string queryString = string.Join("&", query.Select(kv => $"{kv.Key}={Uri.EscapeDataString(kv.Value)}"));
+            string path = $"/admin/products/{chainId}/{Uri.EscapeDataString(sellerNorm)}?{queryString}";
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Get, path);
+            req.Headers.Authorization = bearerHeader;
+            using var response = await wcClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!response.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            var payload = await JsonSerializer.DeserializeAsync<JsonElement>(stream, JsonOptions, ct);
+            return Results.Json(payload);
+        });
+
+        group.MapGet("/wc-runs", async (HttpContext ctx, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
+                return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
+
+            var wcClient = httpClientFactory.CreateClient("wc-admin");
+            using var req = new HttpRequestMessage(HttpMethod.Get, "/admin/runs");
+            req.Headers.Authorization = bearerHeader;
+            using var resp = await wcClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!resp.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
+
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            var payload = await JsonSerializer.DeserializeAsync<JsonElement>(stream, JsonOptions, ct);
+            return Results.Json(payload);
+        });
     }
 }
