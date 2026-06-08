@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - staging
     tags:
       - "v*"
   release:
@@ -81,6 +82,7 @@ jobs:
           images: ${{ secrets.DOCKERHUB_ABOUTCIRCLES_USERNAME }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=staging,enable=${{ github.ref == 'refs/heads/staging' }}
             type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
             type=ref,event=tag
             type=sha,format=short
@@ -97,13 +99,14 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.slug }}
           cache-to: type=gha,mode=max,scope=${{ matrix.slug }}
 
-  # Dispatch deployment to aboutcircles-infrastructure after images are built
+  # Dispatch staging deployment after images are built from the staging branch.
+  # master builds latest/sha tags only — production deploys are always manual.
   trigger-deploy:
     needs: [check-killswitch, build-and-push]
     if: |
       needs.check-killswitch.outputs.proceed == 'true' &&
       needs.build-and-push.result == 'success' &&
-      github.ref == 'refs/heads/master'
+      github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
     steps:
       - name: Compute short SHA
@@ -123,9 +126,6 @@ jobs:
               "environment": "staging",
               "image_tag": "sha-${{ steps.sha.outputs.short }}",
               "commit_sha": "${{ github.sha }}",
-              "triggered_by": "${{ github.actor }}",
-              "source_repo": "${{ github.repository }}",
-              "source_branch": "${{ github.ref_name }}",
               "deploy": {
                 "market_api": "true",
                 "caddy": "true"
