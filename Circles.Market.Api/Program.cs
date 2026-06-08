@@ -477,6 +477,8 @@ string codeDispAdminUrl = Environment.GetEnvironmentVariable("CODEDISP_ADMIN_INT
                            ?? throw new Exception("CODEDISP_ADMIN_INTERNAL_URL env variable is required for admin proxy.");
 string unlockAdminUrl = Environment.GetEnvironmentVariable("UNLOCK_ADMIN_INTERNAL_URL")
                         ?? throw new Exception("UNLOCK_ADMIN_INTERNAL_URL env variable is required for admin proxy.");
+string wcAdminUrl = Environment.GetEnvironmentVariable("WOOCOMMERCE_ADMIN_INTERNAL_URL")
+                    ?? throw new Exception("WOOCOMMERCE_ADMIN_INTERNAL_URL env variable is required for admin proxy.");
 string adminProxyHostsRaw = Environment.GetEnvironmentVariable("ADMIN_PROXY_ALLOWED_HOSTS")
                             ?? throw new Exception("ADMIN_PROXY_ALLOWED_HOSTS env variable is required for admin proxy.");
 var adminProxyHosts = new HashSet<string>(adminProxyHostsRaw
@@ -497,6 +499,7 @@ static Uri RequireSafeAdminUri(string raw, HashSet<string> allowedHosts)
 var odooAdminUri = RequireSafeAdminUri(odooAdminUrl, adminProxyHosts);
 var codeDispAdminUri = RequireSafeAdminUri(codeDispAdminUrl, adminProxyHosts);
 var unlockAdminUri = RequireSafeAdminUri(unlockAdminUrl, adminProxyHosts);
+var wcAdminUri = RequireSafeAdminUri(wcAdminUrl, adminProxyHosts);
 
 adminBuilder.Services.AddHttpClient("odoo-admin", client =>
 {
@@ -519,6 +522,15 @@ adminBuilder.Services.AddHttpClient("codedisp-admin", client =>
 adminBuilder.Services.AddHttpClient("unlock-admin", client =>
 {
     client.BaseAddress = unlockAdminUri;
+    client.Timeout = TimeSpan.FromSeconds(10);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    AllowAutoRedirect = false
+});
+
+adminBuilder.Services.AddHttpClient("wc-admin", client =>
+{
+    client.BaseAddress = wcAdminUri;
     client.Timeout = TimeSpan.FromSeconds(10);
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
