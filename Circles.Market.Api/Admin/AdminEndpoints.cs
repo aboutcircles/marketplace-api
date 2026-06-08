@@ -943,12 +943,17 @@ RETURNING total_inventory";
             using var connResponse = await wcClient.SendAsync(connRequest, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!connResponse.IsSuccessStatusCode) return Results.StatusCode(StatusCodes.Status502BadGateway);
 
+            string consumerKey = req.WcConsumerKey.Trim();
+            string maskedKey = string.IsNullOrEmpty(consumerKey) || consumerKey.Length < 6
+                ? "***"
+                : consumerKey[..2] + new string('*', consumerKey.Length - 4) + consumerKey[^2..];
+
             return Results.Json(new AdminWcConnectionDto
             {
                 ChainId = req.ChainId,
                 Seller = seller,
                 WcBaseUrl = req.WcBaseUrl.Trim(),
-                WcConsumerKey = req.WcConsumerKey.Trim(),
+                WcConsumerKey = maskedKey,
                 DefaultCustomerId = req.DefaultCustomerId,
                 OrderStatus = req.OrderStatus,
                 TimeoutMs = timeout,
@@ -1132,6 +1137,7 @@ WHERE chain_id=$1 AND seller_address=$2 AND sku=$3";
             if (req.ChainId <= 0) return Results.BadRequest(new { error = "chainId must be > 0" });
             if (string.IsNullOrWhiteSpace(req.Seller) || string.IsNullOrWhiteSpace(req.Sku))
                 return Results.BadRequest(new { error = "seller and sku are required" });
+            if (req.StockQuantity < -1) return Results.BadRequest(new { error = "stockQuantity must be >= -1 (-1 = unlimited)" });
             if (!TryGetBearerAuthorization(ctx, out var bearerHeader))
                 return Results.Json(new { error = "missing or invalid bearer token" }, statusCode: StatusCodes.Status401Unauthorized);
 
