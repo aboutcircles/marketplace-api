@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Circles.Market.Adapters.Odoo;
 using Circles.Market.Adapters.Odoo.Admin;
 using Circles.Market.Adapters.Odoo.Auth;
+using Circles.Market.Adapters.Odoo.Conversion;
 using Circles.Market.Adapters.Odoo.Db;
 using Circles.Market.Auth.Siwe;
 using Circles.Market.Fulfillment.Core;
@@ -43,6 +44,16 @@ publicBuilder.Services.AddSingleton<IInventoryStockStore>(sp =>
         connString,
         sp.GetRequiredService<ILogger<PostgresInventoryStockStore>>()));
 
+// CRC→EUR conversion: single pricing service using metrics-api (with demurrage)
+publicBuilder.Services.AddSingleton<ICirclesPricingService>(sp =>
+    new CirclesPricingService(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
+        sp.GetRequiredService<ILogger<CirclesPricingService>>()));
+publicBuilder.Services.AddSingleton<IConversionSnapshotStore>(sp =>
+    new PostgresConversionSnapshotStore(
+        connString,
+        sp.GetRequiredService<ILogger<PostgresConversionSnapshotStore>>()));
+
 // Typed HttpClient for Odoo JSON-RPC.
 publicBuilder.Services.AddHttpClient<OdooClient>();
 
@@ -68,6 +79,10 @@ using (var scope = publicApp.Services.CreateScope())
 {
     var bootstrapper = scope.ServiceProvider.GetRequiredService<OdooDbBootstrapper>();
     await bootstrapper.EnsureSchemaAsync();
+
+    // Ensure conversion_snapshots table exists
+    var conversionStore = scope.ServiceProvider.GetRequiredService<IConversionSnapshotStore>();
+    await conversionStore.EnsureSchemaAsync();
 }
 
 // Helper to authenticate
@@ -329,6 +344,8 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         IInventoryMappingResolver mapper,
         IInventoryStockStore stockStore,
         IOdooFulfillmentRunStore runStore,
+        ICirclesPricingService conversionRate,
+        IConversionSnapshotStore conversionStore,
         IHostApplicationLifetime lifetime,
         IHttpClientFactory httpFactory,
         ILoggerFactory loggerFactory,
@@ -590,6 +607,31 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
             await runStore.SetOdooOrderInfoAsync(chainId, sellerLower, req.PaymentReference, odooOrderId, orderName, jobCt);
             await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, jobCt);
+
+            // Non-blocking: compute CRC→EUR conversion and persist for audit.
+            // Failures are logged but never disrupt the fulfilment flow.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var snapshot = await conversionRate.ComputeAsync(
+                        req.OrderId, req.PaymentReference,
+                        req.AmountWei, req.PaymentTimestamp, jobCt);
+                    if (snapshot is not null)
+                    {
+                        await conversionStore.StoreAsync(snapshot, jobCt);
+                        log.LogInformation(
+                            "CRC→EUR conversion stored for order {OrderId}: {Eur} EUR",
+                            req.OrderId, snapshot.EurEquivalent);
+                    }
+                }
+                catch (Exception convEx)
+                {
+                    log.LogError(convEx,
+                        "CRC→EUR conversion failed (non-fatal) for order {OrderId}",
+                        req.OrderId);
+                }
+            }, jobCt);
 
             string msg = tracking != null
                 ? $"Odoo order {orderName} confirmed. Tracking: {tracking}"
