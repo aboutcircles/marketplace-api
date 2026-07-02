@@ -200,6 +200,13 @@ publicBuilder.Services.AddSingleton<IMarketRouteStore>(sp =>
 
 publicBuilder.Services.AddSingleton<IOrderFulfillmentClient, HttpOrderFulfillmentClient>();
 
+// Fulfillment reconciler: detects paid-but-unfulfilled orders and re-drives them through the normal
+// fulfillment hooks (double-ship-safe via the adapter gate). Runs inside the poller's leader-elected
+// loop. Ships dark: FULFILLMENT_RECONCILE_SECONDS=0 (off) and shadow mode until explicitly enabled.
+publicBuilder.Services.AddSingleton<IStrandedFulfillmentSource>(_ =>
+    new PostgresStrandedFulfillmentSource(pgConn!));
+publicBuilder.Services.AddSingleton<FulfillmentReconciler>();
+
 // Payments poller: polls CrcV2.PaymentReceived via circles_query and persists to Postgres
 publicBuilder.Services.AddHostedService<CirclesPaymentsPoller>();
 

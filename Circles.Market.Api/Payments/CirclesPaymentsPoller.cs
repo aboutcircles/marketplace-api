@@ -83,6 +83,14 @@ public sealed class CirclesPaymentsPoller : BackgroundService
     private readonly int _reconcileSeconds;
     private DateTimeOffset _lastReconcileAt = DateTimeOffset.MinValue;
 
+    // Fulfillment reconciliation: periodically re-drive orders that were paid but never fulfilled
+    // (self-heals a missed one-shot fulfillment). Runs in the same leader-elected loop so it is a
+    // cross-node singleton. 0 disables the cadence entirely; the reconciler itself defaults to shadow
+    // mode (detect + meter, no re-drive) until FULFILLMENT_RECONCILE_ENABLED=true.
+    private readonly FulfillmentReconciler _fulfillmentReconciler;
+    private readonly int _fulfillmentReconcileSeconds;
+    private DateTimeOffset _lastFulfillmentReconcileAt = DateTimeOffset.MinValue;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true
@@ -92,10 +100,12 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         ILogger<CirclesPaymentsPoller> log,
         IHttpClientFactory hcf,
         IOrderPaymentFlow paymentFlow,
-        IPaymentStore payments)
+        IPaymentStore payments,
+        FulfillmentReconciler fulfillmentReconciler)
     {
         _log = log;
         _hcf = hcf;
+        _fulfillmentReconciler = fulfillmentReconciler ?? throw new ArgumentNullException(nameof(fulfillmentReconciler));
         _paymentFlow = paymentFlow ?? throw new ArgumentNullException(nameof(paymentFlow));
         _payments = payments ?? throw new ArgumentNullException(nameof(payments));
         // Configuration consistency: read exclusively from environment variables (same as Program.cs)
@@ -154,6 +164,12 @@ public sealed class CirclesPaymentsPoller : BackgroundService
             ? Math.Max(0, rs)
             : 60;
 
+        // Fulfillment reconciliation cadence (seconds); 0 disables the pass. Defaults to 0 (off) so the
+        // feature ships dark: it is turned on explicitly (shadow first) via env after deploy.
+        _fulfillmentReconcileSeconds = int.TryParse(Environment.GetEnvironmentVariable("FULFILLMENT_RECONCILE_SECONDS"), out var frs)
+            ? Math.Max(0, frs)
+            : 0;
+
         bool allowListEmpty = _gatewayAllowList is null || _gatewayAllowList.Count == 0;
         if (allowListEmpty)
         {
@@ -208,6 +224,7 @@ public sealed class CirclesPaymentsPoller : BackgroundService
                 {
                     await TickAsync(http, stoppingToken);
                     await MaybeReconcileAsync(stoppingToken);
+                    await MaybeReconcileFulfillmentAsync(stoppingToken);
                 }
                 else
                 {
@@ -274,6 +291,27 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         catch (Exception ex)
         {
             _log.LogError(ex, "Settlement reconciliation pass failed");
+        }
+    }
+
+    private async Task MaybeReconcileFulfillmentAsync(CancellationToken ct)
+    {
+        if (_fulfillmentReconcileSeconds <= 0) return;
+        if (DateTimeOffset.UtcNow - _lastFulfillmentReconcileAt < TimeSpan.FromSeconds(_fulfillmentReconcileSeconds)) return;
+        // Stamp before running so a slow or failing pass is rate-limited rather than hot-looping.
+        _lastFulfillmentReconcileAt = DateTimeOffset.UtcNow;
+
+        // Renew/confirm leadership immediately before this heavier pass: a tick that consumed most of
+        // the lease window must not let us re-drive fulfillment after a peer has already taken over.
+        if (_leaderElection && !await TryAcquireLeadershipAsync(ct)) return;
+
+        try
+        {
+            await _fulfillmentReconciler.ReconcileOnceAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Fulfillment reconciliation pass failed");
         }
     }
 
