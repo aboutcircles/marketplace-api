@@ -611,9 +611,31 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
                 await odoo.ConfirmSaleOrderAsync(odooOrderId, odooCt);
             }
 
-            // Tracking lookup (may be missing early; that's OK)
-            var picking = await odoo.GetOperationDetailsByOriginAsync(orderName, odooCt);
-            string? tracking = picking?.CarrierTrackingRef;
+            // At this point the sale order is created + confirmed — fulfillment has SUCCEEDED.
+            // The tracking readback below is best-effort enrichment (the stock.picking / carrier
+            // may not exist yet, and Odoo can raise on carrier_id for some product/route configs).
+            // It MUST NOT fail the run: a readback exception here previously propagated to the outer
+            // catch and flipped an already-fulfilled order to 'error' — the false-negative that
+            // stranded orders in the DB while the customer had actually been served. Isolate it.
+            string? tracking = null;
+            try
+            {
+                var picking = await odoo.GetOperationDetailsByOriginAsync(orderName, odooCt);
+                tracking = picking?.CarrierTrackingRef;
+            }
+            catch (Exception trackingEx)
+            {
+                // Broad catch is deliberate, including cancellation: create+confirm already ran and were
+                // awaited above, so the order IS fulfilled regardless of what the readback throws.
+                // Rethrowing (even on OperationCanceledException) would hit the outer catch and MarkError
+                // an already-fulfilled order — reintroducing the exact false-negative this fix removes.
+                // MarkOkAsync below runs under its own independent token, so it completes even under
+                // host-shutdown cancellation.
+                log.LogWarning(trackingEx,
+                    "Tracking readback failed for Odoo order {OrderName} (marketplace order {OrderId}); " +
+                    "sale order is created+confirmed, marking ok without tracking",
+                    orderName, req.OrderId);
+            }
 
             await runStore.SetOdooOrderInfoAsync(chainId, sellerLower, req.PaymentReference, odooOrderId, orderName, jobCt);
             await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, jobCt);
