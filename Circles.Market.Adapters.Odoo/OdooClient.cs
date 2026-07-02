@@ -340,6 +340,13 @@ public class OdooClient
             ["order_line"] = orderLines
         };
 
+        // Back-reference to the marketplace order so a re-drive can find an already-created
+        // order (idempotency) and so the Odoo order links back without fuzzy matching.
+        if (!string.IsNullOrWhiteSpace(order.ClientOrderRef))
+        {
+            createVals["client_order_ref"] = order.ClientOrderRef!.Trim();
+        }
+
         // Important: pass a single dict as the method argument (not a list-of-dicts)
         object[] positionalArgs = new object[] { createVals };
 
@@ -352,6 +359,28 @@ public class OdooClient
         );
 
         return ParseOdooCreateResultToId(result);
+    }
+
+    /// <summary>
+    /// Looks up an existing sale order by its <c>client_order_ref</c> (the marketplace order id).
+    /// Returns the Odoo order id and name if exactly one match exists, otherwise null.
+    /// Used to make fulfillment idempotent: a re-drive after a partial/crashed run reuses the
+    /// already-created order instead of creating a duplicate.
+    /// </summary>
+    public async Task<(int Id, string? Name)?> FindSaleOrderByClientRefAsync(
+        string clientOrderRef, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(clientOrderRef)) return null;
+
+        var rows = await SearchReadAsync<OdooSaleOrderRefDto>(
+            model: "sale.order",
+            domain: new object[] { new object[] { "client_order_ref", "=", clientOrderRef.Trim() } },
+            fields: new[] { "id", "name" },
+            limit: 1,
+            cancellationToken: cancellationToken);
+
+        if (rows == null || rows.Length == 0) return null;
+        return (rows[0].Id, rows[0].Name);
     }
 
     public async Task<int> CreatePartnerAsync(PartnerCreateDto partner, CancellationToken cancellationToken = default)
