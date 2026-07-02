@@ -1,5 +1,6 @@
 using Circles.Market.Api.Cart;
 using Circles.Market.Api.Fulfillment;
+using Circles.Market.Api.Metrics;
 using Circles.Market.Api.Routing;
 
 namespace Circles.Market.Api.Payments;
@@ -187,6 +188,7 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
                             null, "Invoking fulfillment endpoint", null));
                         var payload = await _fulfillment.FulfillAsync(endpoint!, orderId, payRef, snapshot, trigger, ct);
                         _orders.AddOutboxItem(orderId, "fulfillment", payload);
+                        MarketplaceMetrics.Fulfillment.WithLabels("succeeded").Inc();
                         _trace.Emit(new OrderProcessingTraceEvent(
                             DateTimeOffset.UtcNow, "fulfillment_succeeded", "info", orderId, payRef, sellerChain, sellerAddr, null,
                             null, "Fulfillment completed and outbox item stored", null));
@@ -194,6 +196,7 @@ public sealed class SseOrderLifecycleHooks : IOrderLifecycleHooks
                     catch (Exception ex)
                     {
                         _log.LogError(ex, "Fulfillment failed for order {OrderId} endpoint={Endpoint}", orderId, endpoint);
+                        MarketplaceMetrics.Fulfillment.WithLabels("failed").Inc();
                         _trace.Emit(new OrderProcessingTraceEvent(
                             DateTimeOffset.UtcNow, "fulfillment_failed", "error", orderId, payRef, sellerChain, sellerAddr, null,
                             "fulfillment_exception", ex.Message, null));
