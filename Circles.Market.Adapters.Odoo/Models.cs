@@ -128,6 +128,14 @@ public class SaleOrderCreateDto
 {
     public int PartnerId { get; set; }
     public List<SaleOrderLineDto> Lines { get; set; } = new();
+
+    /// <summary>
+    /// Back-reference to the originating marketplace order (its order id, e.g. "ord_...").
+    /// Written to the Odoo sale order's <c>client_order_ref</c> so that fulfillment is
+    /// idempotent (a re-drive can detect an already-created order) and reconcilable
+    /// (the Odoo order links back to the marketplace order without fuzzy matching).
+    /// </summary>
+    public string? ClientOrderRef { get; set; }
 }
 
 public class SaleOrderLineDto
@@ -211,6 +219,16 @@ public class OdooSaleOrderReadDto
 
     [System.Text.Json.Serialization.JsonPropertyName("amount_total")]
     public decimal? AmountTotal { get; set; }
+}
+
+/// <summary>Minimal sale.order projection for client_order_ref idempotency lookups.</summary>
+public class OdooSaleOrderRefDto
+{
+    [System.Text.Json.Serialization.JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [System.Text.Json.Serialization.JsonPropertyName("name")]
+    public string? Name { get; set; }
 }
 
 /// <summary>
