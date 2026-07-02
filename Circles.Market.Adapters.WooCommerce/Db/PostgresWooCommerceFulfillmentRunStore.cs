@@ -35,6 +35,27 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
         _log = log ?? throw new ArgumentNullException(nameof(log));
     }
 
+    // Terminal-state bookkeeping (completed / failed / order-info) MUST complete even when the
+    // fulfillment job itself was cancelled. The caller's CancellationToken is typically linked to
+    // the fulfillment timeout and/or app-shutdown — i.e. the very cancellation that just aborted
+    // the work. Honoring it here would abort the status transition and strand the run, blocking
+    // re-drive. So these short, single-statement writes run under an independent, bounded token.
+    private static readonly TimeSpan TerminalWriteTimeout = TimeSpan.FromSeconds(15);
+
+    private async Task ExecuteTerminalWriteAsync(string sql, Action<NpgsqlParameterCollection> bindParameters)
+    {
+        using var writeCts = new CancellationTokenSource(TerminalWriteTimeout);
+        CancellationToken writeCt = writeCts.Token;
+
+        await using var conn = new NpgsqlConnection(_connString);
+        await conn.OpenAsync(writeCt);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        bindParameters(cmd.Parameters);
+        await cmd.ExecuteNonQueryAsync(writeCt);
+    }
+
     public async Task<(bool acquired, string? status)> TryBeginAsync(
         long chainId, string seller, string paymentReference, string orderId, CancellationToken ct)
     {
@@ -162,65 +183,60 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
         };
     }
 
-    public async Task MarkOkAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
+    // ct intentionally not threaded into the terminal write — see ExecuteTerminalWriteAsync.
+    public Task MarkOkAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
     {
         string sellerNorm = Norm(seller);
         string paymentNorm = NormRef(paymentReference);
-
-        await using var conn = new NpgsqlConnection(_connString);
-        await conn.OpenAsync(ct);
 
         const string sql = """
             UPDATE wc_fulfillment_runs
             SET status = 'completed', outcome = 'success', completed_at = now(), error_detail = NULL
             WHERE chain_id = @c AND seller_address = @s AND payment_reference = @p;
             """;
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@c", chainId);
-        cmd.Parameters.AddWithValue("@s", sellerNorm);
-        cmd.Parameters.AddWithValue("@p", paymentNorm);
-        await cmd.ExecuteNonQueryAsync(ct);
+        return ExecuteTerminalWriteAsync(sql, p =>
+        {
+            p.AddWithValue("@c", chainId);
+            p.AddWithValue("@s", sellerNorm);
+            p.AddWithValue("@p", paymentNorm);
+        });
     }
 
-    public async Task MarkErrorAsync(long chainId, string seller, string paymentReference, string error, CancellationToken ct)
+    // ct intentionally not threaded into the terminal write — see ExecuteTerminalWriteAsync.
+    public Task MarkErrorAsync(long chainId, string seller, string paymentReference, string error, CancellationToken ct)
     {
         string sellerNorm = Norm(seller);
         string paymentNorm = NormRef(paymentReference);
-
-        await using var conn = new NpgsqlConnection(_connString);
-        await conn.OpenAsync(ct);
 
         const string sql = """
             UPDATE wc_fulfillment_runs
             SET status = 'failed', outcome = 'wc_api_error', completed_at = now(), error_detail = @e
             WHERE chain_id = @c AND seller_address = @s AND payment_reference = @p;
             """;
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@c", chainId);
-        cmd.Parameters.AddWithValue("@s", sellerNorm);
-        cmd.Parameters.AddWithValue("@p", paymentNorm);
-        cmd.Parameters.AddWithValue("@e", error.Length > 2000 ? error[..2000] : error);
-        await cmd.ExecuteNonQueryAsync(ct);
+        string errTrimmed = error.Length > 2000 ? error[..2000] : error;
+        return ExecuteTerminalWriteAsync(sql, p =>
+        {
+            p.AddWithValue("@c", chainId);
+            p.AddWithValue("@s", sellerNorm);
+            p.AddWithValue("@p", paymentNorm);
+            p.AddWithValue("@e", errTrimmed);
+        });
     }
 
-    public async Task SetOrderInfoAsync(Guid runId, int wcOrderId, string wcOrderNumber, CancellationToken ct)
+    // ct intentionally not threaded into the terminal write — see ExecuteTerminalWriteAsync.
+    public Task SetOrderInfoAsync(Guid runId, int wcOrderId, string wcOrderNumber, CancellationToken ct)
     {
-        await using var conn = new NpgsqlConnection(_connString);
-        await conn.OpenAsync(ct);
-
         const string sql = """
             UPDATE wc_fulfillment_runs
             SET wc_order_id = @oid, wc_order_number = @num
             WHERE id = @id;
             """;
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@id", runId);
-        cmd.Parameters.AddWithValue("@oid", wcOrderId);
-        cmd.Parameters.AddWithValue("@num", wcOrderNumber);
-        await cmd.ExecuteNonQueryAsync(ct);
+        return ExecuteTerminalWriteAsync(sql, p =>
+        {
+            p.AddWithValue("@id", runId);
+            p.AddWithValue("@oid", wcOrderId);
+            p.AddWithValue("@num", wcOrderNumber);
+        });
     }
 
     public async Task<string?> GetStatusAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
