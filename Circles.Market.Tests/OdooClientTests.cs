@@ -343,4 +343,115 @@ public class OdooClientTests
         var countryId = await client.ResolveCountryIdAsync("de");
         Assert.That(countryId, Is.EqualTo(56));
     }
+
+    [Test]
+    public async Task CreateSaleOrderAsync_ShouldStampClientOrderRef_WhenProvided()
+    {
+        string? capturedBody = null;
+        var client = ClientCapturing(b => capturedBody = b, result: new[] { 40 });
+
+        await client.CreateSaleOrderAsync(new SaleOrderCreateDto
+        {
+            PartnerId = 9,
+            Lines = new List<SaleOrderLineDto> { new() { ProductId = 3, Quantity = 1 } },
+            ClientOrderRef = "ord_ABC123"
+        });
+
+        using var doc = JsonDocument.Parse(capturedBody!);
+        var createVals = doc.RootElement.GetProperty("params").GetProperty("args")[5][0];
+        Assert.That(createVals.GetProperty("client_order_ref").GetString(), Is.EqualTo("ord_ABC123"));
+    }
+
+    [Test]
+    public async Task CreateSaleOrderAsync_ShouldOmitClientOrderRef_WhenNotProvided()
+    {
+        string? capturedBody = null;
+        var client = ClientCapturing(b => capturedBody = b, result: new[] { 40 });
+
+        await client.CreateSaleOrderAsync(new SaleOrderCreateDto
+        {
+            PartnerId = 9,
+            Lines = new List<SaleOrderLineDto> { new() { ProductId = 3, Quantity = 1 } }
+        });
+
+        using var doc = JsonDocument.Parse(capturedBody!);
+        var createVals = doc.RootElement.GetProperty("params").GetProperty("args")[5][0];
+        Assert.That(createVals.TryGetProperty("client_order_ref", out _), Is.False);
+    }
+
+    [Test]
+    public async Task FindSaleOrderByClientRefAsync_ReturnsIdAndName_WhenMatchExists()
+    {
+        var client = ClientReturning(new { jsonrpc = "2.0", id = 1, result = new[] { new { id = 77, name = "S00077" } } });
+
+        var found = await client.FindSaleOrderByClientRefAsync("ord_ABC123");
+
+        Assert.That(found, Is.Not.Null);
+        Assert.That(found!.Value.Id, Is.EqualTo(77));
+        Assert.That(found.Value.Name, Is.EqualTo("S00077"));
+    }
+
+    [Test]
+    public async Task FindSaleOrderByClientRefAsync_ReturnsNull_WhenNoMatch()
+    {
+        var client = ClientReturning(new { jsonrpc = "2.0", id = 1, result = Array.Empty<object>() });
+
+        var found = await client.FindSaleOrderByClientRefAsync("ord_MISSING");
+
+        Assert.That(found, Is.Null);
+    }
+
+    [Test]
+    public async Task FindSaleOrderByClientRefAsync_ReturnsNull_ForBlankRef_WithoutHttpCall()
+    {
+        // MockBehavior.Strict => any HTTP call throws; a blank ref must short-circuit before that.
+        var handlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        var client = new OdooClient(new HttpClient(handlerMock.Object), Settings(), NullLogger<OdooClient>.Instance);
+
+        Assert.That(await client.FindSaleOrderByClientRefAsync("  "), Is.Null);
+    }
+
+    // --- helpers -------------------------------------------------------------
+
+    private static OdooSettings Settings() => new()
+    {
+        BaseUrl = "https://odoo.example.com",
+        Db = "testdb",
+        UserId = 1,
+        Key = "password"
+    };
+
+    private static OdooClient ClientReturning(object responseBody)
+    {
+        var handlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync(() => new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = JsonContent.Create(responseBody)
+            });
+        var client = new OdooClient(new HttpClient(handlerMock.Object), Settings(), NullLogger<OdooClient>.Instance);
+        client.UpdateBaseAddressAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return client;
+    }
+
+    private static OdooClient ClientCapturing(Action<string?> onBody, object result)
+    {
+        var handlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(), ItExpr.IsAny<CancellationToken>())
+            .ReturnsAsync((HttpRequestMessage request, CancellationToken _) =>
+            {
+                onBody(request.Content is null ? null : request.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+                return new HttpResponseMessage
+                {
+                    StatusCode = HttpStatusCode.OK,
+                    Content = JsonContent.Create(new { jsonrpc = "2.0", id = 1, result })
+                };
+            });
+        var client = new OdooClient(new HttpClient(handlerMock.Object), Settings(), NullLogger<OdooClient>.Instance);
+        client.UpdateBaseAddressAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return client;
+    }
 }

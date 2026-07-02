@@ -572,17 +572,44 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
 
         try
         {
-            var create = new SaleOrderCreateDto
+            int odooOrderId;
+            string orderName;
+
+            // Idempotency: if a prior (possibly crashed/timed-out) run already created a sale
+            // order for this marketplace order, reuse it instead of creating a duplicate.
+            // The link is the client_order_ref we stamp on creation below.
+            var existing = await odoo.FindSaleOrderByClientRefAsync(req.OrderId, odooCt);
+            if (existing is { } ex)
             {
-                PartnerId = partnerIdToUse,
-                Lines = lines
-            };
+                odooOrderId = ex.Id;
+                var existingRead = await odoo.ReadSaleOrderAsync(odooOrderId, odooCt);
+                orderName = existingRead.Name ?? $"sale.order:{odooOrderId}";
 
-            int odooOrderId = await odoo.CreateSaleOrderAsync(create, odooCt);
-            var orderRead = await odoo.ReadSaleOrderAsync(odooOrderId, odooCt);
-            string orderName = orderRead.Name ?? $"sale.order:{odooOrderId}";
+                // A prior run may have created but not confirmed the order; confirm only if still draft.
+                if (string.Equals(existingRead.State, "draft", StringComparison.OrdinalIgnoreCase))
+                {
+                    await odoo.ConfirmSaleOrderAsync(odooOrderId, odooCt);
+                }
 
-            await odoo.ConfirmSaleOrderAsync(odooOrderId, odooCt);
+                log.LogInformation(
+                    "Idempotent reuse of existing Odoo order {OrderName} (id={OdooId}, state={State}) for marketplace order {OrderId}; skipped create",
+                    orderName, odooOrderId, existingRead.State, req.OrderId);
+            }
+            else
+            {
+                var create = new SaleOrderCreateDto
+                {
+                    PartnerId = partnerIdToUse,
+                    Lines = lines,
+                    ClientOrderRef = req.OrderId
+                };
+
+                odooOrderId = await odoo.CreateSaleOrderAsync(create, odooCt);
+                var orderRead = await odoo.ReadSaleOrderAsync(odooOrderId, odooCt);
+                orderName = orderRead.Name ?? $"sale.order:{odooOrderId}";
+
+                await odoo.ConfirmSaleOrderAsync(odooOrderId, odooCt);
+            }
 
             // Tracking lookup (may be missing early; that's OK)
             var picking = await odoo.GetOperationDetailsByOriginAsync(orderName, odooCt);
