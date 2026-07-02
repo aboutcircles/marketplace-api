@@ -26,6 +26,28 @@ public sealed class PostgresCodeFulfillmentRunStore : ICodeDispenserFulfillmentR
         _connString = connString ?? throw new ArgumentNullException(nameof(connString));
     }
 
+    // Terminal-state bookkeeping (ok / error) MUST complete even when the fulfillment job
+    // itself was cancelled. The caller's CancellationToken is typically linked to the
+    // fulfillment timeout and/or app-shutdown — i.e. the very cancellation that just aborted
+    // the work. Honoring it here would abort the status transition and strand the row in
+    // 'started', the fulfillment lock-leak that permanently blocks re-drive. So these short,
+    // single-statement writes run under an independent, bounded token.
+    private static readonly TimeSpan TerminalWriteTimeout = TimeSpan.FromSeconds(15);
+
+    private async Task ExecuteTerminalWriteAsync(string sql, Action<NpgsqlParameterCollection> bindParameters)
+    {
+        using var writeCts = new CancellationTokenSource(TerminalWriteTimeout);
+        CancellationToken writeCt = writeCts.Token;
+
+        await using var conn = new NpgsqlConnection(_connString);
+        await conn.OpenAsync(writeCt);
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        bindParameters(cmd.Parameters);
+        await cmd.ExecuteNonQueryAsync(writeCt);
+    }
+
     public async Task<(bool acquired, string? status)> TryBeginAsync(
         long chainId,
         string seller,
@@ -110,49 +132,43 @@ WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p
         return (false, status);
     }
 
-    public async Task MarkOkAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
+    // ct intentionally not threaded into the terminal write — see ExecuteTerminalWriteAsync.
+    public Task MarkOkAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
     {
         string sellerNorm = NormalizeSeller(seller);
         string paymentNorm = NormalizePaymentReference(paymentReference);
-
-        await using var conn = new NpgsqlConnection(_connString);
-        await conn.OpenAsync(ct);
 
         const string sql = @"
 UPDATE code_fulfillment_runs
 SET status='ok', updated_at=now(), completed_at=now(), last_error=NULL
 WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
 ";
-
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@c", chainId);
-        cmd.Parameters.AddWithValue("@s", sellerNorm);
-        cmd.Parameters.AddWithValue("@p", paymentNorm);
-        await cmd.ExecuteNonQueryAsync(ct);
+        return ExecuteTerminalWriteAsync(sql, p =>
+        {
+            p.AddWithValue("@c", chainId);
+            p.AddWithValue("@s", sellerNorm);
+            p.AddWithValue("@p", paymentNorm);
+        });
     }
 
-    public async Task MarkErrorAsync(long chainId, string seller, string paymentReference, string error, CancellationToken ct)
+    // ct intentionally not threaded into the terminal write — see ExecuteTerminalWriteAsync.
+    public Task MarkErrorAsync(long chainId, string seller, string paymentReference, string error, CancellationToken ct)
     {
         string sellerNorm = NormalizeSeller(seller);
         string paymentNorm = NormalizePaymentReference(paymentReference);
-
-        await using var conn = new NpgsqlConnection(_connString);
-        await conn.OpenAsync(ct);
 
         const string sql = @"
 UPDATE code_fulfillment_runs
 SET status='error', updated_at=now(), completed_at=now(), last_error=@e
 WHERE chain_id=@c AND seller_address=@s AND payment_reference=@p;
 ";
-
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("@c", chainId);
-        cmd.Parameters.AddWithValue("@s", sellerNorm);
-        cmd.Parameters.AddWithValue("@p", paymentNorm);
-        cmd.Parameters.AddWithValue("@e", error);
-        await cmd.ExecuteNonQueryAsync(ct);
+        return ExecuteTerminalWriteAsync(sql, p =>
+        {
+            p.AddWithValue("@c", chainId);
+            p.AddWithValue("@s", sellerNorm);
+            p.AddWithValue("@p", paymentNorm);
+            p.AddWithValue("@e", error);
+        });
     }
 
     public async Task<string?> GetStatusAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
