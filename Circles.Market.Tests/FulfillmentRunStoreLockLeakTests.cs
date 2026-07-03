@@ -33,6 +33,11 @@ public class FulfillmentRunStoreLockLeakTests
         var conn = Environment.GetEnvironmentVariable("MARKET_TEST_PG");
         if (string.IsNullOrWhiteSpace(conn))
         {
+            // In CI these tests are part of the image-publish gate — a silent skip would make it vacuous.
+            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+            {
+                Assert.Fail("MARKET_TEST_PG is not set in CI; fulfillment-run integration tests must run, not skip.");
+            }
             Assert.Ignore("Set MARKET_TEST_PG to a Postgres connection string to run fulfillment-run store integration tests.");
         }
         _conn = conn!;

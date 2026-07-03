@@ -775,9 +775,10 @@ UPDATE orders o SET
 FROM ord oo
 LEFT JOIN pay p ON p.payment_reference = @ref
 WHERE o.order_id = oo.order_id
+  AND p.total_amount_wei IS NOT NULL
   AND (
         oo.expected_wei IS NULL
-        OR (p.total_amount_wei IS NOT NULL AND p.total_amount_wei >= oo.expected_wei)
+        OR p.total_amount_wei >= oo.expected_wei
       );
 ";
         cmd.Parameters.AddWithValue("@processing", Circles.Market.Api.StatusUris.PaymentProcessing);
@@ -786,15 +787,13 @@ WHERE o.order_id = oo.order_id
         cmd.Parameters.AddWithValue("@log", logIndex);
         cmd.Parameters.AddWithValue("@chain", paidChainId);
         cmd.Parameters.AddWithValue("@gw", (object)gatewayAddress);
-        if (amountWei is null)
+        // BigInteger → string, PG casts in SQL. The parameter must carry an explicit type:
+        // an untyped DBNull (total_amount_wei NULL, e.g. no eligible transfers yet) makes
+        // Postgres fail with 42P08 "could not determine data type" and aborts the poll cycle.
+        cmd.Parameters.Add(new NpgsqlParameter("@amt", NpgsqlTypes.NpgsqlDbType.Text)
         {
-            cmd.Parameters.AddWithValue("@amt", DBNull.Value);
-        }
-        else
-        {
-            // Npgsql can map decimal; BigInteger → string then let PG cast
-            cmd.Parameters.AddWithValue("@amt", (object)amountWei.Value.ToString());
-        }
+            Value = amountWei is null ? DBNull.Value : (object)amountWei.Value.ToString()
+        });
         cmd.Parameters.AddWithValue("@ref", paymentReference);
         int n = cmd.ExecuteNonQuery();
         return n > 0;
