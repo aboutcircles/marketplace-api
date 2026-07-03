@@ -47,6 +47,15 @@ internal sealed class CirclesQueryResponse
     public object? Error { get; set; }
 }
 
+/// <summary>
+/// A gateway's reduced trust state. <see cref="All"/> reduces every TrustUpdated row (legacy
+/// behavior); <see cref="FactoryAnchored"/> reduces only rows emitted by a canonical gateway
+/// factory — null when no factory is configured OR the anchored set is temporarily unavailable
+/// (shadow-mode degradation). Forged rows from other emitters are absent from the anchored set
+/// entirely (they can neither grant nor revoke trust).
+/// </summary>
+internal sealed record GatewayTrustSets(HashSet<string> All, HashSet<string>? FactoryAnchored);
+
 public sealed class CirclesPaymentsPoller : BackgroundService
 {
     private readonly ILogger<CirclesPaymentsPoller> _log;
@@ -63,9 +72,18 @@ public sealed class CirclesPaymentsPoller : BackgroundService
     private readonly int _confirmConfirmations;
     private readonly int _finalizeConfirmations;
     private readonly TimeSpan _trustCacheTtl;
-    // gateway (lowercase) -> (active trusted avatar set, fetchedAt). Short-TTL cache so we don't
-    // re-query the gateway's on-chain trust list on every transfer.
-    private readonly Dictionary<string, (HashSet<string> Set, DateTimeOffset FetchedAt)> _trustCache = new();
+    // gateway (lowercase) -> (trust sets, fetchedAt). Short-TTL cache so we don't re-query the
+    // gateway's on-chain trust list on every transfer.
+    private readonly Dictionary<string, (GatewayTrustSets Sets, DateTimeOffset FetchedAt)> _trustCache = new();
+
+    // Canonical gateway factory addresses (lowercase). When set, TrustUpdated rows are additionally
+    // reduced to a factory-anchored set (rows emitted by a canonical factory only); when enforced,
+    // ONLY that set decides eligibility — an attacker-deployed gateway self-trusting a token emits
+    // rows under its own address, which simply don't count. CSV so a factory upgrade (new address)
+    // can be expressed without a flag-day. Null = feature off (legacy behavior).
+    private readonly IReadOnlyCollection<string>? _gatewayFactories;
+    private readonly bool _factoryEnforced;
+    private readonly IOrderProcessingTraceSink _trace;
 
     // Leader election: with multiple market-api nodes sharing one DB, only the lease holder runs the
     // poll/settle/reconcile work so the instances don't race on the same payment rows. Lease-based
@@ -101,13 +119,15 @@ public sealed class CirclesPaymentsPoller : BackgroundService
         IHttpClientFactory hcf,
         IOrderPaymentFlow paymentFlow,
         IPaymentStore payments,
-        FulfillmentReconciler fulfillmentReconciler)
+        FulfillmentReconciler fulfillmentReconciler,
+        IOrderProcessingTraceSink trace)
     {
         _log = log;
         _hcf = hcf;
         _fulfillmentReconciler = fulfillmentReconciler ?? throw new ArgumentNullException(nameof(fulfillmentReconciler));
         _paymentFlow = paymentFlow ?? throw new ArgumentNullException(nameof(paymentFlow));
         _payments = payments ?? throw new ArgumentNullException(nameof(payments));
+        _trace = trace ?? throw new ArgumentNullException(nameof(trace));
         // Configuration consistency: read exclusively from environment variables (same as Program.cs)
         _rpcUrl = Environment.GetEnvironmentVariable("RPC")
                   ?? throw new Exception("RPC env variable is required for payments poller");
@@ -170,16 +190,77 @@ public sealed class CirclesPaymentsPoller : BackgroundService
             ? Math.Max(0, frs)
             : 0;
 
-        bool allowListEmpty = _gatewayAllowList is null || _gatewayAllowList.Count == 0;
-        if (allowListEmpty)
+        // Factory-anchored gateway enforcement. PAYMENT_GATEWAY_FACTORY names the canonical
+        // factory contract(s) (CSV); gateways are created dynamically per seller, so a static
+        // allowlist is an operational trap — factory provenance is self-maintaining. Anchoring
+        // happens on the TrustUpdated EMITTER (verified: every legitimate trust row is emitted by
+        // the factory), NOT on gateway.factory() (a hostile contract can return any address).
+        var factoryCsv = Environment.GetEnvironmentVariable("PAYMENT_GATEWAY_FACTORY");
+        if (!string.IsNullOrWhiteSpace(factoryCsv)) // empty string = templated-unset, feature off
         {
-            // Token-trust is always enforced per gateway, but without a gateway allowlist a payment
-            // routed through an attacker-controlled gateway that self-trusts a token would still be
-            // credited. Set PAYMENT_GATEWAYS (or settle the gateway-authorization model) to close this.
+            var factories = new HashSet<string>(factoryCsv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(a => a.ToLowerInvariant()));
+            foreach (var f in factories)
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(f, "^0x[0-9a-f]{40}$"))
+                {
+                    throw new InvalidOperationException(
+                        $"PAYMENT_GATEWAY_FACTORY contains an invalid address: '{f}'");
+                }
+            }
+            _gatewayFactories = factories;
+        }
+
+        _factoryEnforced = string.Equals(
+            Environment.GetEnvironmentVariable("PAYMENT_GATEWAY_FACTORY_ENFORCED"), "true",
+            StringComparison.OrdinalIgnoreCase);
+        if (_factoryEnforced && _gatewayFactories is null)
+        {
+            throw new InvalidOperationException(
+                "PAYMENT_GATEWAY_FACTORY_ENFORCED=true requires PAYMENT_GATEWAY_FACTORY. " +
+                "Without the canonical factory address there is no anchored trust set to enforce.");
+        }
+        if (_gatewayFactories is not null)
+        {
+            if (_factoryEnforced)
+            {
+                _log.LogWarning(
+                    "Gateway factory anchoring ENFORCED (factories: {Factories}): only trust rows " +
+                    "emitted by the canonical factory decide token eligibility.",
+                    string.Join(",", _gatewayFactories));
+            }
+            else
+            {
+                _log.LogInformation(
+                    "Gateway factory anchoring in SHADOW mode (factories: {Factories}): divergence " +
+                    "between the legacy and factory-anchored trust verdicts is logged and counted but " +
+                    "does not affect settlement. Set PAYMENT_GATEWAY_FACTORY_ENFORCED=true after a clean soak.",
+                    string.Join(",", _gatewayFactories));
+            }
+        }
+
+        bool allowListEmpty = _gatewayAllowList is null || _gatewayAllowList.Count == 0;
+        if (!allowListEmpty && _gatewayFactories is not null)
+        {
+            // The static allowlist drops non-listed gateways at INGESTION with cursor advance —
+            // unrecoverable, and it overrides the self-maintaining factory anchor for new sellers.
             _log.LogWarning(
-                "PAYMENT_GATEWAYS is empty: payment events from ANY gateway are processed. Token-trust " +
-                "is still enforced per gateway, but an attacker-controlled gateway that self-trusts a token " +
-                "would be credited. Set PAYMENT_GATEWAYS to restrict authoritative gateways.");
+                "Both PAYMENT_GATEWAYS and PAYMENT_GATEWAY_FACTORY are set. The static allowlist drops " +
+                "payments from unlisted gateways irrecoverably at ingestion — a factory-created gateway " +
+                "missing from the list loses payments even though factory anchoring would accept it. " +
+                "Prefer factory anchoring alone once enforced.");
+        }
+        if (allowListEmpty && !_factoryEnforced)
+        {
+            // Token-trust is always enforced per gateway, but until factory anchoring is ENFORCED
+            // a payment routed through an attacker-controlled gateway that self-trusts a token is
+            // still credited. Shadow mode observes; it does not close the hole.
+            _log.LogWarning(
+                "Gateway authorization is not enforced ({State}): payment events from ANY gateway are " +
+                "processed and an attacker-controlled gateway that self-trusts a token would be credited. " +
+                "Set PAYMENT_GATEWAY_FACTORY and, after a clean shadow soak, PAYMENT_GATEWAY_FACTORY_ENFORCED=true.",
+                _gatewayFactories is null ? "no factory configured" : "factory in shadow mode");
         }
     }
 
@@ -371,8 +452,8 @@ public sealed class CirclesPaymentsPoller : BackgroundService
 
                     // Resolve token-trust eligibility against the receiving gateway's trust list and
                     // annotate the transfer; the order payment flow credits only eligible (trusted) transfers.
-                    var trustSet = await GetGatewayTrustSetAsync(http, transfer.GatewayAddress, ct);
-                    transfer = transfer with { Eligible = DecideEligibility(trustSet, transfer.TokenAvatar) };
+                    var trustSets = await GetGatewayTrustSetsAsync(http, transfer.GatewayAddress, ct);
+                    transfer = transfer with { Eligible = ResolveEligibility(trustSets, transfer) };
 
                     await _paymentFlow.HandleObservedTransferAsync(transfer, ct);
                     lastTransfer = transfer;
@@ -638,10 +719,10 @@ ORDER BY first_block_number ASC";
         {
             ct.ThrowIfCancellationRequested();
 
-            var trustSet = await GetGatewayTrustSetAsync(http, t.GatewayAddress, ct);
+            var trustSets = await GetGatewayTrustSetsAsync(http, t.GatewayAddress, ct);
             // Reuse the single eligibility decision; null = still undetermined (no avatar or trust
             // data unavailable) → leave it and retry next tick.
-            var verdict = DecideEligibility(trustSet, t.TokenAvatar);
+            var verdict = ResolveEligibility(trustSets, t);
             if (verdict is null) continue;
 
             bool eligible = verdict.Value;
@@ -701,53 +782,175 @@ ORDER BY first_block_number ASC";
     }
 
     /// <summary>
-    /// Active trusted-avatar set for a gateway, cached for _trustCacheTtl. Returns null when the
-    /// set cannot be determined (RPC error and no cached value), so the caller leaves the transfer
+    /// Active trusted-avatar sets for a gateway, cached for _trustCacheTtl. Returns null when the
+    /// sets cannot be determined (RPC error and no cached value), so the caller leaves the transfer
     /// undetermined and retries later rather than wrongly rejecting it.
     /// </summary>
-    private async Task<HashSet<string>?> GetGatewayTrustSetAsync(HttpClient http, string gateway, CancellationToken ct)
+    private async Task<GatewayTrustSets?> GetGatewayTrustSetsAsync(HttpClient http, string gateway, CancellationToken ct)
     {
         gateway = gateway.ToLowerInvariant();
         var now = DateTimeOffset.UtcNow;
         if (_trustCache.TryGetValue(gateway, out var cached) && (now - cached.FetchedAt) < _trustCacheTtl)
         {
-            return cached.Set;
+            return cached.Sets;
         }
 
         try
         {
-            var set = await FetchActiveTrustSetAsync(http, gateway, now.ToUnixTimeSeconds(), ct);
-            _trustCache[gateway] = (set, now);
-            return set;
+            var sets = await FetchActiveTrustSetsAsync(http, gateway, now.ToUnixTimeSeconds(), ct);
+            _trustCache[gateway] = (sets, now);
+            return sets;
         }
         catch (Exception ex)
         {
             Metrics.MarketplaceMetrics.GatewayTrustFetchFailures.Inc();
             _log.LogWarning(ex, "Failed to fetch gateway trust set for {Gateway}", gateway);
             // Fall back to stale cache if we have one; else undetermined (null).
-            return _trustCache.TryGetValue(gateway, out var stale) ? stale.Set : null;
+            return _trustCache.TryGetValue(gateway, out var stale) ? stale.Sets : null;
         }
     }
 
-    private async Task<HashSet<string>> FetchActiveTrustSetAsync(HttpClient http, string gateway, long nowUnix,
+    /// <summary>
+    /// Resolves a transfer's eligibility and surfaces divergence between the legacy (all-emitters)
+    /// and factory-anchored verdicts: in shadow mode divergence is the flip gate; in enforced mode
+    /// it distinguishes "blocked forged trust / broken legit gateway" from ordinary untrusted-token
+    /// rejections. Divergences are persisted as a trace event so the forensic record outlives log
+    /// retention (the flip decision depends on it).
+    /// </summary>
+    private bool? ResolveEligibility(GatewayTrustSets? sets, PaymentTransferRecord transfer)
+    {
+        var (verdict, diverged) = DecideFactoryAwareEligibility(sets, transfer.TokenAvatar, _gatewayFactories is not null, _factoryEnforced);
+        if (diverged)
+        {
+            string mode = _factoryEnforced ? "enforced" : "shadow";
+            var legacy = DecideEligibility(sets?.All, transfer.TokenAvatar);
+            var anchored = DecideEligibility(sets?.FactoryAnchored, transfer.TokenAvatar);
+            Metrics.MarketplaceMetrics.PaymentsFactoryDivergence.WithLabels(mode).Inc();
+            _log.LogWarning(
+                "Factory-anchoring divergence ({Mode}) for gateway {Gateway}, token avatar {Avatar}, tx {Tx}, ref {Ref}: " +
+                "legacy verdict {Legacy}, factory-anchored verdict {Anchored}",
+                mode, transfer.GatewayAddress, transfer.TokenAvatar, transfer.TxHash, transfer.PaymentReference,
+                legacy, anchored);
+            _trace.Emit(new OrderProcessingTraceEvent(
+                OccurredAt: DateTimeOffset.UtcNow,
+                Stage: "payment_factory_divergence",
+                Status: "warn",
+                OrderId: null,
+                PaymentReference: transfer.PaymentReference,
+                ChainId: transfer.ChainId,
+                SellerAddress: null,
+                BuyerAddress: transfer.PayerAddress,
+                ReasonCode: mode,
+                Message: $"gateway {transfer.GatewayAddress} token {transfer.TokenAvatar} tx {transfer.TxHash}: legacy={legacy} anchored={anchored}",
+                Details: null));
+        }
+        return verdict;
+    }
+
+    /// <summary>
+    /// Verdict selection across the two trust sets. Enforced → the factory-anchored set decides
+    /// (divergence still reported, for observability only). Shadow (factory configured, not
+    /// enforced) → the legacy set decides; a differing anchored verdict is reported. An
+    /// unavailable anchored set (null while configured, e.g. shadow-mode degradation) is
+    /// "cannot compare", never a divergence. Factory unset → legacy set only.
+    /// </summary>
+    internal static (bool? Verdict, bool Diverged) DecideFactoryAwareEligibility(
+        GatewayTrustSets? sets, string? tokenAvatar, bool factoryConfigured, bool enforced)
+    {
+        if (enforced)
+        {
+            var anchoredVerdict = DecideEligibility(sets?.FactoryAnchored, tokenAvatar);
+            var legacyVerdict = DecideEligibility(sets?.All, tokenAvatar);
+            return (anchoredVerdict, sets is not null && anchoredVerdict != legacyVerdict);
+        }
+
+        var legacy = DecideEligibility(sets?.All, tokenAvatar);
+        if (factoryConfigured && sets?.FactoryAnchored is not null)
+        {
+            var anchored = DecideEligibility(sets.FactoryAnchored, tokenAvatar);
+            return (legacy, anchored != legacy);
+        }
+        return (legacy, false);
+    }
+
+    private const int TrustQueryLimit = 1000;
+
+    private async Task<GatewayTrustSets> FetchActiveTrustSetsAsync(HttpClient http, string gateway, long nowUnix,
         CancellationToken ct)
     {
+        // Legacy (all-emitters) set: unfiltered query, exactly as before this feature.
+        var allResult = await QueryTrustRowsAsync(http, gateway, emitter: null, ct);
+        var all = ParseActiveTrustSet(allResult.Columns, allResult.Rows, nowUnix);
+
+        if (_gatewayFactories is null)
+        {
+            return new GatewayTrustSets(all, null);
+        }
+
+        // Anchored set. With a single factory the emitter predicate runs SERVER-SIDE so forged
+        // rows cannot consume the row budget (flooding a victim gateway past the query limit
+        // would otherwise push the newest factory rows out of the window). The client-side
+        // filter in ParseActiveTrustSet stays on as defense-in-depth (a server that silently
+        // ignored the predicate would otherwise hand us unanchored rows). With multiple
+        // factories (migration window) the filter is client-side only — the truncation guard
+        // below still bounds the exposure.
+        string? serverEmitter = _gatewayFactories.Count == 1 ? _gatewayFactories.First() : null;
+        try
+        {
+            var anchoredResult = serverEmitter is not null
+                ? await QueryTrustRowsAsync(http, gateway, serverEmitter, ct)
+                : allResult;
+
+            if (anchoredResult.Rows.Length > 0 &&
+                Array.FindIndex(anchoredResult.Columns, c => string.Equals(c, "emitter", StringComparison.OrdinalIgnoreCase)) < 0)
+            {
+                // The anchored set is meaningless without emitter attribution — schema drift, not
+                // "gateway trusts nothing".
+                throw new InvalidOperationException(
+                    $"circles_query TrustUpdated missing emitter column for gateway {gateway} (required for factory anchoring)");
+            }
+
+            var anchored = ParseActiveTrustSet(anchoredResult.Columns, anchoredResult.Rows, nowUnix, _gatewayFactories);
+            return new GatewayTrustSets(all, anchored);
+        }
+        catch (Exception ex) when (!_factoryEnforced && ex is not OperationCanceledException)
+        {
+            // Shadow must never affect settlement: degrade to "anchored unavailable" (no
+            // divergence is reported for it) instead of failing the whole fetch into the
+            // undetermined path. Enforced mode propagates — there, an unavailable anchored set
+            // must leave transfers undetermined rather than fall back to the legacy verdict.
+            _log.LogError(ex,
+                "Factory-anchored trust set unavailable for gateway {Gateway} (shadow mode; legacy verdict unaffected)",
+                gateway);
+            return new GatewayTrustSets(all, null);
+        }
+    }
+
+    private async Task<CirclesQueryResult> QueryTrustRowsAsync(HttpClient http, string gateway, string? emitter,
+        CancellationToken ct)
+    {
+        var filter = new List<object>
+        {
+            new { Type = "FilterPredicate", FilterType = "Equals", Column = "gateway", Value = gateway }
+        };
+        if (emitter is not null)
+        {
+            filter.Add(new { Type = "FilterPredicate", FilterType = "Equals", Column = "emitter", Value = emitter });
+        }
+
         var reqModel = new CirclesQueryRequest
         {
             Namespace = "CrcV2_PaymentGateway",
             Table = "TrustUpdated",
             Columns = new(),
-            Filter = new List<object>
-            {
-                new { Type = "FilterPredicate", FilterType = "Equals", Column = "gateway", Value = gateway }
-            },
+            Filter = filter,
             Order = new()
             {
                 new OrderSpec { Column = "blockNumber", SortOrder = "ASC" },
                 new OrderSpec { Column = "transactionIndex", SortOrder = "ASC" },
                 new OrderSpec { Column = "logIndex", SortOrder = "ASC" }
             },
-            Limit = 1000
+            Limit = TrustQueryLimit
         };
         var env = new CirclesQueryEnvelope<CirclesQueryRequest> { Params = new[] { reqModel } };
 
@@ -780,7 +983,18 @@ ORDER BY first_block_number ASC";
                 throw new InvalidOperationException($"circles_query TrustUpdated missing trustReceiver/expiry columns for gateway {gateway} (schema drift)");
         }
 
-        return ParseActiveTrustSet(result.Columns, result.Rows, nowUnix);
+        // A full page means the window may have been truncated: reducing a partial row set could
+        // both hide newer revocations (fail-open) and hide newer grants (fail-closed). Refuse and
+        // leave transfers undetermined rather than decide on incomplete data.
+        if (result.Rows.Length >= TrustQueryLimit)
+        {
+            throw new InvalidOperationException(
+                $"circles_query TrustUpdated returned {result.Rows.Length} rows (query limit) for gateway {gateway}" +
+                (emitter is null ? "" : $" emitter {emitter}") +
+                " — trust list truncated, refusing to reduce a partial window");
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -1072,8 +1286,16 @@ ORDER BY first_block_number ASC";
     /// explicit (blockNumber, transactionIndex, logIndex) comparison rather than relying on input
     /// ordering (mirrors the core-app reference reducer) — and a receiver is active when its expiry
     /// (unix seconds) is strictly in the future relative to nowUnix.
+    ///
+    /// With <paramref name="emitterFilter"/> set, rows emitted by any address OUTSIDE the filter
+    /// set are discarded BEFORE the latest-wins reduction — a forged row can neither add trust
+    /// nor, by being newer, revoke trust the canonical factory established.
+    /// NOTE: this fail-safe (missing/unattributable emitter → row discarded, possibly yielding an
+    /// empty all-rejecting set) is only correct because the production fetch path throws upstream
+    /// on emitter-column schema drift; direct callers must apply the same guard.
     /// </summary>
-    internal static HashSet<string> ParseActiveTrustSet(string[] cols, object[][] rows, long nowUnix)
+    internal static HashSet<string> ParseActiveTrustSet(string[] cols, object[][] rows, long nowUnix,
+        IReadOnlyCollection<string>? emitterFilter = null)
     {
         var set = new HashSet<string>();
         if (rows.Length == 0) return set;
@@ -1085,6 +1307,8 @@ ORDER BY first_block_number ASC";
         var ib = Col("blockNumber");
         var itx = Col("transactionIndex");
         var il = Col("logIndex");
+        var iem = Col("emitter");
+        if (emitterFilter is not null && iem < 0) return set; // cannot attribute rows — anchored set empty (fail-safe)
 
         long Pos(object[] row, int idx)
         {
@@ -1097,6 +1321,16 @@ ORDER BY first_block_number ASC";
         foreach (var row in rows)
         {
             if (itr >= row.Length || iexp >= row.Length) continue;
+
+            if (emitterFilter is not null)
+            {
+                var emitter = iem < row.Length ? ToStringOrNull(row[iem]) : null;
+                if (emitter is null || !emitterFilter.Contains(NormalizeAvatar(emitter)))
+                {
+                    continue;
+                }
+            }
+
             var receiver = ToStringOrNull(row[itr]);
             if (string.IsNullOrWhiteSpace(receiver)) continue;
             receiver = NormalizeAvatar(receiver);

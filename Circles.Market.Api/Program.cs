@@ -413,6 +413,9 @@ publicApp.MapPinApi();
 publicApp.MapInventoryApi();
 publicApp.MapCanonicalizeApi();
 publicApp.MapMetrics();
+// Register every marketplace metric family at 0 immediately — without this, a freshly
+// deployed idle instance exposes no marketplace_* series until first activity.
+Circles.Market.Api.Metrics.MarketplaceMetrics.EnsureInitialized();
 
 var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
