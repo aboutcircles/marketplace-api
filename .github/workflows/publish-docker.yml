@@ -11,8 +11,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Kill switch: Set repository variable DEPLOYMENTS_ENABLED=false to disable automated builds
-  # Manual workflow_dispatch always allowed
+  # Kill switch: Set repository variable DEPLOYMENTS_ENABLED=false to disable automated builds.
+  # Manual workflow_dispatch bypasses the kill switch (but never the test gate).
   check-killswitch:
     runs-on: ubuntu-latest
     outputs:
@@ -32,9 +32,15 @@ jobs:
             echo "proceed=true" >> $GITHUB_OUTPUT
           fi
 
+  # Gate: no image is published unless the full solution builds and all tests pass.
+  # Deliberately NOT behind the kill switch — the switch stops publishing, not testing,
+  # so pushes to master always produce a correctness signal.
+  test:
+    uses: ./.github/workflows/test.yml
+
   build-and-push:
-    needs: check-killswitch
-    if: needs.check-killswitch.outputs.proceed == 'true'
+    needs: [check-killswitch, test]
+    if: needs.check-killswitch.outputs.proceed == 'true' && needs.test.result == 'success'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
