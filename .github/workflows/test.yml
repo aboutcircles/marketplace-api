@@ -1,0 +1,50 @@
+name: Build & Test
+
+# Reusable test job: runs the full solution build plus all tests, including the
+# Postgres-backed integration tests (MARKET_TEST_PG). In CI the variable is always
+# set; locally without a database those tests skip automatically.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: market_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Circles.Market.sln
+
+      - name: Build
+        run: dotnet build Circles.Market.sln -c Release --no-restore
+
+      - name: Test
+        env:
+          MARKET_TEST_PG: "Host=localhost;Port=5432;Database=market_test;Username=postgres;Password=test"
+        run: dotnet test Circles.Market.sln -c Release --no-build --verbosity normal
