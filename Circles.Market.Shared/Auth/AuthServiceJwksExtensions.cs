@@ -46,8 +46,17 @@ public static class AuthServiceJwksExtensions
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<JwksKeyManager>>();
-            return new JwksKeyManager(jwksUrl, logger);
+            return new JwksKeyManager(jwksUrl, logger,
+                cacheDuration: ReadSecondsEnv("AUTH_JWKS_CACHE_SECONDS"),
+                maxStaleness: ReadSecondsEnv("AUTH_JWKS_MAX_STALE_SECONDS"));
         });
+
+        // Keeps the JWKS snapshot warm so ResolveSigningKeys never does I/O on the
+        // request path. AddHostedService dedupes by type, so a double AddAuthServiceJwks
+        // call still registers a single refresher.
+        services.AddHostedService(sp => new JwksRefreshService(
+            sp.GetRequiredService<JwksKeyManager>(),
+            sp.GetRequiredService<ILogger<JwksRefreshService>>()));
 
         services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, AuthServiceJwtPostConfigure>();
 
@@ -113,6 +122,18 @@ public static class AuthServiceJwksExtensions
             });
 
         services.AddAuthorization();
+    }
+
+    /// <summary>
+    /// Optional env var holding a duration in whole seconds; unset, unparsable or
+    /// non-positive values fall back to the built-in default (returns null).
+    /// </summary>
+    private static TimeSpan? ReadSecondsEnv(string name)
+    {
+        string? raw = Environment.GetEnvironmentVariable(name);
+        return int.TryParse(raw, out int seconds) && seconds > 0
+            ? TimeSpan.FromSeconds(seconds)
+            : null;
     }
 }
 

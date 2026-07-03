@@ -413,6 +413,9 @@ publicApp.MapPinApi();
 publicApp.MapInventoryApi();
 publicApp.MapCanonicalizeApi();
 publicApp.MapMetrics();
+// Register every marketplace metric family at 0 immediately — without this, a freshly
+// deployed idle instance exposes no marketplace_* series until first activity.
+Circles.Market.Api.Metrics.MarketplaceMetrics.EnsureInitialized();
 
 var adminBuilder = WebApplication.CreateBuilder(args);
 adminBuilder.Logging.ClearProviders();
@@ -569,4 +572,10 @@ adminApp.MapMarketAdminApi("/admin", pgConn!);
 
 var publicTask = publicApp.RunAsync();
 var adminTask = adminApp.RunAsync();
+
+// Surface the FIRST fault immediately: with a bare WhenAll, a host that dies at startup
+// (e.g. a hosted-service ctor rejecting misconfiguration) leaves the process half-alive
+// on the other host until shutdown, hiding the actionable error.
+var first = await Task.WhenAny(publicTask, adminTask);
+await first;
 await Task.WhenAll(publicTask, adminTask);

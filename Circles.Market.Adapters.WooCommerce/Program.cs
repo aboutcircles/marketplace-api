@@ -305,10 +305,12 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     // Idempotency: try to insert with explicit idempotency_key
     Guid idempotencyKey = req.IdempotencyKey ?? Guid.NewGuid();
     Guid runId;
+    bool runInserted;
+    DateTimeOffset runCreatedAt;
 
     try
     {
-        runId = await runStore.TryInsertAsync(chainId, sellerLower, req.PaymentReference, idempotencyKey,
+        (runId, runInserted, runCreatedAt) = await runStore.TryInsertAsync(chainId, sellerLower, req.PaymentReference, idempotencyKey,
             JsonSerializer.Serialize(req), ct);
     }
     catch (Exception ex)
@@ -391,6 +393,117 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
         : CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, lifetime.ApplicationStopping);
     var jobCt = linkedCts.Token;
 
+    // Shield each increment: one rollback failure must not abort the remaining rollbacks
+    // or escape the catch block that owns the terminal-state write.
+    async Task RollbackStockAsync(List<(string Sku, int Qty)> decremented)
+    {
+        foreach (var d in decremented)
+        {
+            try { await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, CancellationToken.None); }
+            catch (Exception rollbackEx)
+            {
+                log.LogError(rollbackEx, "Failed to rollback local stock for sku={Sku}", d.Sku);
+            }
+        }
+    }
+
+    // Pre-create readback, only when the run row pre-existed (a prior attempt happened):
+    // that attempt may have failed AFTER WooCommerce committed the order (timeout,
+    // connection drop) — the run row then reads 'failed'/'pending' while the shop already
+    // has the order, and re-driving would double-ship. Adopt the existing order instead
+    // (mirrors the Odoo client_order_ref readback). Fresh runs skip the lookup entirely:
+    // the row insert precedes any WC call, so a fresh insert proves no prior attempt.
+    if (!runInserted)
+    {
+        // Statuses an adoptable prior order may carry. A cancelled/refunded/failed prior
+        // order is an operator decision, not something to silently heal or re-create.
+        string[] adoptableStatuses = ["pending", "processing", "on-hold", "completed"];
+
+        try
+        {
+            // The phantom order can only have been created at/after the prior run row;
+            // 1h of slack absorbs clock skew between the adapter and the shop.
+            var existingOrder = await wcClient!.FindOrderByPaymentReferenceAsync(
+                req.PaymentReference, runCreatedAt - TimeSpan.FromHours(1), jobCt);
+            if (existingOrder != null)
+            {
+                string existingNumber = string.IsNullOrEmpty(existingOrder.Number)
+                    ? existingOrder.Id.ToString()
+                    : existingOrder.Number;
+
+                string? stampedOrderId = existingOrder.MetaData?
+                    .FirstOrDefault(m => m.Key == "circles_order_id" && m.Value.ValueKind == JsonValueKind.String)?
+                    .Value.GetString();
+                if (stampedOrderId != null && !string.Equals(stampedOrderId, req.OrderId, StringComparison.Ordinal))
+                {
+                    throw new WooCommerceApiException("wc_adoption_mismatch",
+                        $"Order #{existingNumber} carries this payment reference but a different circles_order_id");
+                }
+
+                if (!adoptableStatuses.Contains(existingOrder.Status))
+                {
+                    throw new WooCommerceApiException("wc_prior_order_terminal",
+                        $"Existing WooCommerce order #{existingNumber} has status '{existingOrder.Status}'; " +
+                        "operator decision required instead of adopt-or-recreate");
+                }
+
+                // The prior attempt's stock decrement was rolled back in its catch block,
+                // yet the adopted order ships — compensate so local counters stay honest.
+                foreach (var item in req.Items ?? Enumerable.Empty<WooCommerceFulfillmentItem>())
+                {
+                    var mapping = await mapper.ResolveAsync(chainId, sellerLower, item.Sku, jobCt);
+                    if (mapping == null) continue;
+                    int qty = Math.Max(1, (int)Math.Floor(item.Quantity));
+                    var available = await stockStore.GetAvailableQtyAsync(chainId, sellerLower, item.Sku, jobCt);
+                    if (available.HasValue && !await stockStore.TryDecrementAsync(chainId, sellerLower, item.Sku, qty, jobCt))
+                    {
+                        log.LogError(
+                            "Adoption stock compensation failed for chain={ChainId} seller={Seller} sku={Sku} qty={Qty}: counter exhausted, drift persists",
+                            chainId, sellerLower, item.Sku, qty);
+                    }
+                }
+
+                await runStore.SetOrderInfoAsync(runId, existingOrder.Id, existingNumber, ct);
+                await runStore.MarkOkAsync(chainId, sellerLower, req.PaymentReference, "adopted", ct);
+                log.LogWarning(
+                    "Adopted existing WooCommerce order {WcOrderId} (#{Number}) for paymentReference={Ref} (prior attempt committed it)",
+                    existingOrder.Id, existingNumber, req.PaymentReference);
+                return Results.Json(new Dictionary<string, object?>
+                {
+                    ["@type"] = "circles:WooCommerceFulfillmentResult",
+                    ["status"] = "ok",
+                    ["orderId"] = req.OrderId,
+                    ["paymentReference"] = req.PaymentReference,
+                    ["seller"] = sellerLower,
+                    ["message"] = $"Recovered existing WooCommerce order #{existingNumber}",
+                    ["wcOrderId"] = existingOrder.Id,
+                    ["wcOrderNumber"] = existingNumber,
+                    ["wcOrderStatus"] = existingOrder.Status
+                });
+            }
+        }
+        catch (Exception ex) when (ex is WooCommerceApiException or OperationCanceledException)
+        {
+            // Fail safe: without proof the order does not exist, creating one risks a duplicate.
+            string code = (ex as WooCommerceApiException)?.Code ?? "wc_precreate_lookup_cancelled";
+            log.LogError(ex,
+                "Pre-create order readback failed for chain={ChainId} seller={Seller} paymentReference={Ref} code={Code}",
+                chainId, sellerLower, req.PaymentReference, code);
+            await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference,
+                $"Pre-create order lookup failed ({code}): {ex.Message}", ct);
+            return Results.Json(new Dictionary<string, object?>
+            {
+                ["@type"] = "circles:WooCommerceFulfillmentResult",
+                ["status"] = "error",
+                ["orderId"] = req.OrderId,
+                ["paymentReference"] = req.PaymentReference,
+                ["seller"] = sellerLower,
+                ["message"] = $"Pre-create order lookup failed ({code}): {ex.Message}",
+                ["codes"] = new[] { "wc_precreate_lookup_failed", code }
+            }, statusCode: 502);
+        }
+    }
+
     // Upsert WC customer
     string buyerAddress = req.Buyer?.Trim().ToLowerInvariant() ?? sellerLower;
     int customerId = wcInfo.DefaultCustomerId ?? 0;
@@ -432,9 +545,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
             bool decremented = await stockStore.TryDecrementAsync(chainId, sellerLower, item.Sku, qty, jobCt);
             if (!decremented)
             {
-                // Rollback
-                foreach (var d in decrementedStock)
-                    await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, CancellationToken.None);
+                await RollbackStockAsync(decrementedStock);
 
                 await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, $"Insufficient local stock for {item.Sku}", ct);
                 return Results.Json(new Dictionary<string, object?>
@@ -515,8 +626,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     }
     catch (WooCommerceApiException ex) when (ex.IsValidationError)
     {
-        foreach (var d in decrementedStock)
-            await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, CancellationToken.None);
+        await RollbackStockAsync(decrementedStock);
 
         await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, ex.Message, ct);
         return Results.Json(new Dictionary<string, object?>
@@ -532,14 +642,7 @@ publicApp.MapPost("/fulfill/{chainId:long}/{seller}", async (
     }
     catch (Exception ex)
     {
-        foreach (var d in decrementedStock)
-        {
-            try { await stockStore.IncrementAsync(chainId, sellerLower, d.Sku, d.Qty, CancellationToken.None); }
-            catch (Exception rollbackEx)
-            {
-                log.LogError(rollbackEx, "Failed to rollback local stock for sku={Sku}", d.Sku);
-            }
-        }
+        await RollbackStockAsync(decrementedStock);
 
         string msg = ex.Message.Length > 2000 ? ex.Message[..2000] : ex.Message;
         await runStore.MarkErrorAsync(chainId, sellerLower, req.PaymentReference, msg, ct);

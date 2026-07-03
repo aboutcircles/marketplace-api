@@ -28,6 +28,22 @@ public static class MarketplaceMetrics
         "marketplace_gateway_trust_fetch_failures_total",
         "Failures fetching a gateway's on-chain trust list; affected payments stay undetermined until it recovers");
 
+    public static readonly Counter PaymentsFactoryDivergence = Prometheus.Metrics.CreateCounter(
+        "marketplace_payments_factory_divergence_total",
+        "Transfers whose token-trust verdict differs between the legacy (all-emitters) and factory-anchored trust sets, labelled by mode. mode=shadow: investigate BEFORE setting PAYMENT_GATEWAY_FACTORY_ENFORCED=true — either an attack (forged trust rows) or a legitimate gateway whose trust the factory did not emit (enforcement would break it). mode=enforced: an attack being blocked OR a legitimate gateway breaking under enforcement — page. Divergence details persist as payment_factory_divergence trace events.",
+        new CounterConfiguration { LabelNames = new[] { "mode" } });
+
+    /// <summary>
+    /// Forces the static initializer so every metric family appears on /metrics at process
+    /// start. Static class members otherwise initialize lazily on first activity, making a
+    /// freshly deployed idle instance indistinguishable from one whose metrics broke.
+    /// </summary>
+    public static void EnsureInitialized()
+    {
+        // Touching any member runs the type initializer for the whole class.
+        _ = OrdersCreated;
+    }
+
     public static readonly Counter PaymentsReconciled = Prometheus.Metrics.CreateCounter(
         "marketplace_payments_reconciled_total",
         "Orders re-driven to settlement by the reconciliation pass (were unpaid despite sufficient eligible payment); a sustained nonzero rate signals an upstream observe-time matching gap");

@@ -12,18 +12,35 @@ public sealed record StrandedOrder(string OrderId, string PaymentReference);
 public sealed record FulfillmentReconcileResult(int Candidates, int Reconciled, int Failed, bool Enabled);
 
 /// <summary>
+/// Parameters of a stranded-order candidate query. <see cref="OrderIds"/> (when non-null)
+/// restricts candidates to an explicit allowlist — the targeted-recovery mode; and
+/// <see cref="SettledAfter"/> (when non-null) excludes anything settled at/before the
+/// cutoff — the steady-state mode that fences off the historic backlog. At least one of
+/// the two is REQUIRED for an active (re-driving) reconciler: the unscoped candidate set
+/// is "no fulfillment outbox row", which is known to include orders that were actually
+/// fulfilled before success markers existed — re-driving those double-ships.
+///
+/// Granularity note: the re-drive fires the lifecycle hooks per PAYMENT REFERENCE, which
+/// fan out to every order sharing that reference. The allowlist therefore effectively
+/// scopes by an allowlisted order's payment reference, not strictly by order id — vet
+/// candidates at reference granularity.
+/// </summary>
+public sealed record StrandedQuery(
+    int GraceMinutes,
+    int MaxAttempts,
+    int MaxAgeDays,
+    int Limit,
+    IReadOnlyCollection<string>? OrderIds,
+    DateTimeOffset? SettledAfter);
+
+/// <summary>
 /// Supplies the set of orders that are paid/finalized but have no successful fulfillment.
 /// Abstracted so the reconciler's orchestration is unit-testable without a database (the
 /// concrete SQL implementation follows the same "not unit-tested" convention as the poller SQL).
 /// </summary>
 public interface IStrandedFulfillmentSource
 {
-    Task<IReadOnlyList<StrandedOrder>> GetStrandedAsync(
-        int graceMinutes,
-        int maxAttempts,
-        int maxAgeDays,
-        int limit,
-        CancellationToken ct);
+    Task<IReadOnlyList<StrandedOrder>> GetStrandedAsync(StrandedQuery query, CancellationToken ct);
 }
 
 /// <summary>
@@ -51,24 +68,36 @@ public sealed class PostgresStrandedFulfillmentSource : IStrandedFulfillmentSour
         _connString = connString ?? throw new ArgumentNullException(nameof(connString));
     }
 
-    public async Task<IReadOnlyList<StrandedOrder>> GetStrandedAsync(
-        int graceMinutes,
-        int maxAttempts,
-        int maxAgeDays,
-        int limit,
-        CancellationToken ct)
+    public async Task<IReadOnlyList<StrandedOrder>> GetStrandedAsync(StrandedQuery query, CancellationToken ct)
     {
         var result = new List<StrandedOrder>();
         await using var conn = new NpgsqlConnection(_connString);
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
+
+        string scopeClauses = "";
+        if (query.OrderIds is not null)
+        {
+            scopeClauses += "\n  AND o.order_id = ANY(@orderIds)";
+            cmd.Parameters.Add(new NpgsqlParameter("@orderIds", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Text)
+            {
+                Value = query.OrderIds.ToArray()
+            });
+        }
+        if (query.SettledAfter is not null)
+        {
+            scopeClauses += "\n  AND COALESCE(o.finalized_at, o.confirmed_at) > @settledAfter";
+            // Npgsql rejects non-zero-offset DateTimeOffset against timestamptz.
+            cmd.Parameters.AddWithValue("@settledAfter", query.SettledAfter.Value.ToUniversalTime());
+        }
+
         cmd.CommandText = @"
 SELECT o.order_id, o.payment_reference
 FROM orders o
 WHERE o.payment_reference IS NOT NULL
   AND COALESCE(o.finalized_at, o.confirmed_at) IS NOT NULL
   AND COALESCE(o.finalized_at, o.confirmed_at) < now() - make_interval(mins => @grace)
-  AND COALESCE(o.finalized_at, o.confirmed_at) > now() - make_interval(days => @maxAge)
+  AND COALESCE(o.finalized_at, o.confirmed_at) > now() - make_interval(days => @maxAge)" + scopeClauses + @"
   AND NOT EXISTS (
     SELECT 1 FROM order_outbox ob
     WHERE ob.order_id = o.order_id AND ob.source = 'fulfillment'
@@ -79,10 +108,10 @@ WHERE o.payment_reference IS NOT NULL
   ) < @maxAttempts
 ORDER BY COALESCE(o.finalized_at, o.confirmed_at) ASC
 LIMIT @limit;";
-        cmd.Parameters.AddWithValue("@grace", graceMinutes);
-        cmd.Parameters.AddWithValue("@maxAttempts", maxAttempts);
-        cmd.Parameters.AddWithValue("@maxAge", maxAgeDays);
-        cmd.Parameters.AddWithValue("@limit", limit);
+        cmd.Parameters.AddWithValue("@grace", query.GraceMinutes);
+        cmd.Parameters.AddWithValue("@maxAttempts", query.MaxAttempts);
+        cmd.Parameters.AddWithValue("@maxAge", query.MaxAgeDays);
+        cmd.Parameters.AddWithValue("@limit", query.Limit);
 
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
@@ -122,6 +151,8 @@ public sealed class FulfillmentReconciler
     private readonly int _maxAttempts;
     private readonly int _maxAgeDays;
     private readonly int _limit;
+    private readonly IReadOnlyCollection<string>? _orderIds;
+    private readonly DateTimeOffset? _settledAfter;
 
     public FulfillmentReconciler(
         IStrandedFulfillmentSource source,
@@ -145,6 +176,21 @@ public sealed class FulfillmentReconciler
         // hard-termination backstop, not the primary bound (that is the attempt cap).
         _maxAgeDays = ReadPositiveInt("FULFILLMENT_RECONCILE_MAX_AGE_DAYS", 400);
         _limit = Math.Clamp(ReadPositiveInt("FULFILLMENT_RECONCILE_LIMIT", 100), 1, 1000);
+
+        _orderIds = ReadOrderIds("FULFILLMENT_RECONCILE_ORDER_IDS");
+        _settledAfter = ReadTimestamp("FULFILLMENT_RECONCILE_SETTLED_AFTER");
+
+        // An ACTIVE reconciler must be scoped: the unscoped candidate set ("no fulfillment
+        // outbox row") is known to include orders that were fulfilled before success markers
+        // existed — re-driving those double-ships. Shadow mode may run unscoped (it only logs).
+        if (_enabled && _orderIds is null && _settledAfter is null)
+        {
+            throw new InvalidOperationException(
+                "FULFILLMENT_RECONCILE_ENABLED=true requires FULFILLMENT_RECONCILE_ORDER_IDS " +
+                "(explicit targeted-recovery allowlist) and/or FULFILLMENT_RECONCILE_SETTLED_AFTER " +
+                "(cutoff fencing off the historic backlog). An unscoped active reconciler would " +
+                "re-drive already-fulfilled orders that lack success markers and double-ship.");
+        }
     }
 
     private static int ReadPositiveInt(string envName, int fallback)
@@ -153,9 +199,70 @@ public sealed class FulfillmentReconciler
         return int.TryParse(raw, out var v) && v > 0 ? v : fallback;
     }
 
+    /// <summary>
+    /// Comma/whitespace-separated order-id allowlist. Null when the variable is absent or an
+    /// empty string (the common templated-unset shape). A non-empty value that parses to zero
+    /// ids throws: silently degrading an intended allowlist to "no allowlist" would widen the
+    /// scope — e.g. to cutoff-only when SETTLED_AFTER is also set.
+    /// </summary>
+    private static IReadOnlyCollection<string>? ReadOrderIds(string envName)
+    {
+        var raw = Environment.GetEnvironmentVariable(envName);
+        if (string.IsNullOrEmpty(raw)) return null;
+        var ids = raw
+            .Split([',', ' ', '\t', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"{envName} is set but contains no order ids: '{raw}'");
+        }
+        return ids;
+    }
+
+    private static readonly string[] TimestampFormats =
+    [
+        "O",
+        "yyyy-MM-dd'T'HH:mm:ssK",
+        "yyyy-MM-dd'T'HH:mm:ss",
+        "yyyy-MM-dd"
+    ];
+
+    /// <summary>
+    /// Strict ISO-8601 timestamp; null when unset. A SET-but-unparsable value throws, and
+    /// only unambiguous ISO shapes are accepted — lenient parsing would let a day/month-
+    /// swapped date through as a valid-looking cutoff months off target, silently widening
+    /// the re-drive window. Offset-less values are read as UTC.
+    /// </summary>
+    private static DateTimeOffset? ReadTimestamp(string envName)
+    {
+        var raw = Environment.GetEnvironmentVariable(envName);
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (!DateTimeOffset.TryParseExact(raw, TimestampFormats,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var value))
+        {
+            throw new InvalidOperationException(
+                $"{envName} is set but not an ISO-8601 timestamp (e.g. 2026-07-03T10:00:00Z): '{raw}'");
+        }
+        return value;
+    }
+
+    private string ScopeDescription =>
+        (_orderIds, _settledAfter) switch
+        {
+            (not null, not null) => $"order-id allowlist ({_orderIds.Count}) + settled after {_settledAfter:o}",
+            (not null, null) => $"order-id allowlist ({_orderIds.Count})",
+            (null, not null) => $"settled after {_settledAfter:o}",
+            _ => "UNSCOPED (shadow only)"
+        };
+
     public async Task<FulfillmentReconcileResult> ReconcileOnceAsync(CancellationToken ct)
     {
-        var candidates = await _source.GetStrandedAsync(_graceMinutes, _maxAttempts, _maxAgeDays, _limit, ct);
+        var candidates = await _source.GetStrandedAsync(
+            new StrandedQuery(_graceMinutes, _maxAttempts, _maxAgeDays, _limit, _orderIds, _settledAfter), ct);
 
         // Dedupe by payment reference: the hooks fan out to every order sharing the reference, so
         // firing once per reference is sufficient (and avoids double-firing a shared reference).
@@ -167,6 +274,16 @@ public sealed class FulfillmentReconciler
 
         MarketplaceMetrics.FulfillmentStranded.Set(byReference.Count);
 
+        // With an explicit allowlist the operator EXPECTS action — zero matches must be
+        // visible, not inferred from the absence of a log line (typo'd ids, already
+        // recovered, and filtered-out-by-bounds are otherwise indistinguishable).
+        if (_orderIds is not null)
+        {
+            _log.LogInformation(
+                "Fulfillment reconciler allowlist: {AllowlistCount} order id(s) configured, {Matched} candidate(s) matched",
+                _orderIds.Count, candidates.Count);
+        }
+
         if (byReference.Count == 0)
         {
             return new FulfillmentReconcileResult(0, 0, 0, _enabled);
@@ -176,15 +293,17 @@ public sealed class FulfillmentReconciler
         {
             // Shadow mode: surface what WOULD be re-driven so it can be vetted before enabling.
             _log.LogWarning(
-                "Fulfillment reconciler (SHADOW, disabled): {Count} stranded order(s) detected but NOT re-driven. " +
+                "Fulfillment reconciler (SHADOW, disabled, scope: {Scope}): {Count} stranded order(s) detected but NOT re-driven. " +
                 "Set FULFILLMENT_RECONCILE_ENABLED=true after verifying the candidates. Sample: {Sample}",
+                ScopeDescription,
                 byReference.Count,
                 string.Join(", ", byReference.Values.Take(10).Select(o => o.OrderId)));
             return new FulfillmentReconcileResult(byReference.Count, 0, 0, false);
         }
 
         _log.LogWarning(
-            "Fulfillment reconciler (ACTIVE): re-driving {Count} stranded order(s)",
+            "Fulfillment reconciler (ACTIVE, scope: {Scope}): re-driving {Count} stranded order(s)",
+            ScopeDescription,
             byReference.Count);
 
         int reconciled = 0;

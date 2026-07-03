@@ -190,6 +190,23 @@ public class WcOrderDto
 
     [JsonPropertyName("date_modified")]
     public DateTimeOffset? DateModified { get; set; }
+
+    [JsonPropertyName("meta_data")]
+    public List<WcOrderMetaDto>? MetaData { get; set; }
+}
+
+/// <summary>
+/// Order meta entry as returned by the WooCommerce API. <c>value</c> is arbitrary JSON
+/// (plugins store arrays/objects), so it is kept as a <see cref="JsonElement"/> and only
+/// interpreted where a string is expected.
+/// </summary>
+public class WcOrderMetaDto
+{
+    [JsonPropertyName("key")]
+    public string Key { get; set; } = string.Empty;
+
+    [JsonPropertyName("value")]
+    public JsonElement Value { get; set; }
 }
 
 /// <summary>WooCommerce customer response from GET /customers.</summary>
