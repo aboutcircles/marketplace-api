@@ -16,9 +16,19 @@ public interface IWooCommerceFulfillmentRunStore : IFulfillmentRunStore
     /// <summary>Looks up a run by its idempotency key.</summary>
     Task<WooCommerceFulfillmentRunRecord?> GetByIdempotencyKeyAsync(Guid key, CancellationToken ct);
 
-    /// <summary>Creates a new run record and returns its ID, or returns existing ID if key exists.</summary>
-    Task<Guid> TryInsertAsync(long chainId, string seller, string paymentReference, Guid idempotencyKey,
+    /// <summary>
+    /// Creates a new run record, or resolves the existing one for this idempotency key /
+    /// payment reference. <c>Inserted</c> is false when the row pre-existed — i.e. a prior
+    /// fulfillment attempt happened and a pre-create order readback is warranted;
+    /// <c>CreatedAt</c> is the run row's creation time (the earliest moment a prior attempt
+    /// could have committed a WooCommerce order).
+    /// </summary>
+    Task<(Guid Id, bool Inserted, DateTimeOffset CreatedAt)> TryInsertAsync(
+        long chainId, string seller, string paymentReference, Guid idempotencyKey,
         string requestPayload, CancellationToken ct);
+
+    /// <summary>Marks a run completed; <paramref name="outcome"/> distinguishes adoption recoveries.</summary>
+    Task MarkOkAsync(long chainId, string seller, string paymentReference, string outcome, CancellationToken ct);
 }
 
 public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfillmentRunStore
@@ -92,7 +102,7 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
         return (false, status);
     }
 
-    public async Task<Guid> TryInsertAsync(
+    public async Task<(Guid Id, bool Inserted, DateTimeOffset CreatedAt)> TryInsertAsync(
         long chainId, string seller, string paymentReference, Guid idempotencyKey,
         string requestPayload, CancellationToken ct)
     {
@@ -102,11 +112,12 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
         await using var conn = new NpgsqlConnection(_connString);
         await conn.OpenAsync(ct);
 
+        // (xmax = 0) distinguishes a fresh insert from the DO UPDATE path on an existing row.
         const string sql = """
             INSERT INTO wc_fulfillment_runs(id, chain_id, seller_address, payment_reference, idempotency_key, status, request_payload)
             VALUES (@id, @c, @s, @p, @key, 'pending', @payload::jsonb)
             ON CONFLICT (idempotency_key) DO UPDATE SET id = wc_fulfillment_runs.id
-            RETURNING id;
+            RETURNING id, created_at, (xmax = 0) AS inserted;
             """;
 
         await using var cmd = conn.CreateCommand();
@@ -120,8 +131,9 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
 
         try
         {
-            var result = await cmd.ExecuteScalarAsync(ct);
-            return (Guid)result!;
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            await reader.ReadAsync(ct);
+            return (reader.GetGuid(0), reader.GetBoolean(2), reader.GetFieldValue<DateTimeOffset>(1));
         }
         catch (PostgresException ex) when (ex.SqlState == "23505")
         {
@@ -129,7 +141,7 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
             // This means a run already exists for this payment — look it up and return its ID.
             _log.LogInformation("Fulfillment run already exists for payment_reference={PaymentRef}, returning existing run", paymentNorm);
             const string lookupSql = """
-                SELECT id FROM wc_fulfillment_runs
+                SELECT id, created_at FROM wc_fulfillment_runs
                 WHERE chain_id = @c AND seller_address = @s AND payment_reference = @p
                 LIMIT 1;
                 """;
@@ -138,8 +150,9 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
             lookupCmd.Parameters.AddWithValue("@c", chainId);
             lookupCmd.Parameters.AddWithValue("@s", sellerNorm);
             lookupCmd.Parameters.AddWithValue("@p", paymentNorm);
-            var existing = await lookupCmd.ExecuteScalarAsync(ct);
-            return (Guid)existing!;
+            await using var lookupReader = await lookupCmd.ExecuteReaderAsync(ct);
+            await lookupReader.ReadAsync(ct);
+            return (lookupReader.GetGuid(0), false, lookupReader.GetFieldValue<DateTimeOffset>(1));
         }
     }
 
@@ -185,17 +198,22 @@ public sealed class PostgresWooCommerceFulfillmentRunStore : IWooCommerceFulfill
 
     // ct intentionally not threaded into the terminal write — see ExecuteTerminalWriteAsync.
     public Task MarkOkAsync(long chainId, string seller, string paymentReference, CancellationToken ct)
+        => MarkOkAsync(chainId, seller, paymentReference, "success", ct);
+
+    // ct intentionally not threaded into the terminal write — see ExecuteTerminalWriteAsync.
+    public Task MarkOkAsync(long chainId, string seller, string paymentReference, string outcome, CancellationToken ct)
     {
         string sellerNorm = Norm(seller);
         string paymentNorm = NormRef(paymentReference);
 
         const string sql = """
             UPDATE wc_fulfillment_runs
-            SET status = 'completed', outcome = 'success', completed_at = now(), error_detail = NULL
+            SET status = 'completed', outcome = @o, completed_at = now(), error_detail = NULL
             WHERE chain_id = @c AND seller_address = @s AND payment_reference = @p;
             """;
         return ExecuteTerminalWriteAsync(sql, p =>
         {
+            p.AddWithValue("@o", outcome);
             p.AddWithValue("@c", chainId);
             p.AddWithValue("@s", sellerNorm);
             p.AddWithValue("@p", paymentNorm);

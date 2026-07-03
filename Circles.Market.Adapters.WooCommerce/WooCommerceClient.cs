@@ -180,6 +180,82 @@ public sealed class WooCommerceClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// Searches orders created since <paramref name="searchAfter"/> for one stamped with the
+    /// given <c>circles_payment_reference</c> meta. Pre-create readback: a prior fulfillment
+    /// attempt may have failed AFTER WooCommerce committed the order (timeout, connection
+    /// drop), so creating again would double-ship. The caller anchors the window at the prior
+    /// run row's creation time — the earliest moment the phantom order can exist — making a
+    /// complete scan of the window an actual proof of absence. Scans oldest-first (the phantom
+    /// sits at the start of the window) and matches the meta client-side, since core WC REST
+    /// does not support meta queries. Returns null only after a COMPLETE scan; a truncated
+    /// scan or any API failure throws — proceeding to create without proof of absence would
+    /// defeat the guard.
+    /// </summary>
+    public async Task<WcOrderDto?> FindOrderByPaymentReferenceAsync(
+        string paymentReference, DateTimeOffset searchAfter, CancellationToken ct)
+    {
+        const int scanPageSize = 100;
+        const int maxScanPages = 10;
+
+        try
+        {
+            string after = Uri.EscapeDataString(
+                searchAfter.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss"));
+
+            for (int page = 1; page <= maxScanPages; page++)
+            {
+                var orders = await GetOrderPageAsync(
+                    $"orders?per_page={scanPageSize}&page={page}&orderby=date&order=asc&after={after}&dates_are_gmt=true",
+                    ct);
+                var match = orders.FirstOrDefault(o => OrderMatchesReference(o, paymentReference));
+                if (match != null) return match;
+                if (orders.Count < scanPageSize) return null; // window fully scanned — proven absent
+            }
+
+            // Every page came back full: the window holds more orders than we scanned.
+            // "Not found" would be unproven, so fail closed.
+            _log.LogError(
+                "Order readback inconclusive: >{Max} pages of orders since {After:o}; refusing to create a potential duplicate",
+                maxScanPages, searchAfter);
+            throw new WooCommerceApiException(
+                "wc_lookup_inconclusive",
+                $"Order scan exceeded {maxScanPages} pages ({maxScanPages * scanPageSize} orders) since {searchAfter:o}");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.LogError("Timeout searching orders by payment reference");
+            throw new WooCommerceApiException("wc_api_timeout", "Order lookup timed out");
+        }
+        catch (WooCommerceApiException) { throw; }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Error searching orders by payment reference");
+            throw new WooCommerceApiException("wc_api_request_failed", ex.Message);
+        }
+    }
+
+    private async Task<List<WcOrderDto>> GetOrderPageAsync(string url, CancellationToken ct)
+    {
+        using var response = await _http.GetAsync(url, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var (code, msg) = await ReadErrorAsync(response, ct);
+            throw new WooCommerceApiException(code, msg);
+        }
+
+        var json = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<List<WcOrderDto>>(json, JsonOptions) ?? new();
+    }
+
+    private static bool OrderMatchesReference(WcOrderDto order, string paymentReference)
+    {
+        return order.MetaData?.Any(m =>
+            m.Key == "circles_payment_reference" &&
+            m.Value.ValueKind == JsonValueKind.String &&
+            string.Equals(m.Value.GetString(), paymentReference, StringComparison.Ordinal)) == true;
+    }
+
     /// <summary>Fetches an existing WooCommerce order by ID.</summary>
     public async Task<WcOrderDto?> GetOrderAsync(int orderId, CancellationToken ct)
     {

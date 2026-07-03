@@ -208,6 +208,83 @@ WC_ORDER_ID=$(psql_wc -At -c "SELECT wc_order_id FROM wc_fulfillment_runs WHERE 
 [ -n "$WC_ORDER_ID" ] && [ "$WC_ORDER_ID" != "" ] || fail "No WC order ID recorded"
 ok "WC order ID: $WC_ORDER_ID"
 
+# ── Step 9: Adoption after ambiguous failure (double-ship guard) ────────────
+# Simulates a prior attempt that failed AFTER WooCommerce committed the order
+# (timeout/connection drop): the run row says 'failed' while the shop has the
+# order. A re-drive must ADOPT the existing order, not create a duplicate.
+
+echo
+echo "=== Step 9: Adopt existing WC order after simulated ambiguous failure ==="
+
+psql_wc -At -c "UPDATE wc_fulfillment_runs
+  SET status='failed', outcome='wc_api_error', wc_order_id=NULL, wc_order_number=NULL,
+      error_detail='simulated timeout after commit'
+  WHERE payment_reference = '${PAYMENT_REF}';" > /dev/null
+
+REDRIVE_RESULT=$(curl -fsS -X POST \
+  -H "X-Circles-Service-Key: ${SERVICE_KEY}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"orderId\": \"test-order-001\",
+    \"paymentReference\": \"${PAYMENT_REF}\",
+    \"items\": [ { \"sku\": \"${MARKETPLACE_SKU}\", \"quantity\": 1 } ]
+  }" \
+  "http://localhost:${WC_ADAPTER_PORT}/fulfill/${CHAIN_ID}/${SELLER}" 2>&1)
+
+echo "$REDRIVE_RESULT" | grep -q '"status":"ok"' || fail "Re-drive failed: $REDRIVE_RESULT"
+echo "$REDRIVE_RESULT" | grep -q "Recovered existing WooCommerce order" \
+  || fail "Re-drive did not adopt the existing order: $REDRIVE_RESULT"
+echo "$REDRIVE_RESULT" | grep -q "\"wcOrderId\":${WC_ORDER_ID}" \
+  || fail "Adopted order ID mismatch (expected ${WC_ORDER_ID}): $REDRIVE_RESULT"
+ok "Re-drive adopted existing WC order #${WC_ORDER_ID} (no duplicate created)"
+
+HEALED=$(psql_wc -At -c "SELECT status || '|' || outcome || '|' || COALESCE(wc_order_id::text,'NULL') FROM wc_fulfillment_runs WHERE payment_reference = '${PAYMENT_REF}' LIMIT 1")
+[ "$HEALED" = "completed|adopted|${WC_ORDER_ID}" ] \
+  || fail "Run not healed correctly after adoption (want completed|adopted|${WC_ORDER_ID}): $HEALED"
+ok "Run row healed: status=completed outcome=adopted wc_order_id=${WC_ORDER_ID}"
+
+# ── Step 10: Fail-closed on unreachable shop during readback ────────────────
+# A re-drive whose pre-create lookup cannot be completed must NOT create an
+# order (potential duplicate) — it must 502 with wc_precreate_lookup_failed.
+
+echo
+echo "=== Step 10: Fail closed when readback cannot reach the shop ==="
+
+SELLER2="0x0000000000000000000000000000000000000009"
+FAIL_REF="test-failclosed-$(date +%s)"
+
+psql_wc -At -c "INSERT INTO wc_connections
+    (id, chain_id, seller_address, wc_base_url, wc_consumer_key, wc_consumer_secret, enabled)
+  VALUES (gen_random_uuid(), ${CHAIN_ID}, '${SELLER2}', 'http://127.0.0.1:1',
+          'ck_unreachable_000000000000000000000000000', 'cs_unreachable_00000000000000000000000000000', true)
+  ON CONFLICT DO NOTHING;" > /dev/null
+psql_wc -At -c "INSERT INTO wc_fulfillment_runs
+    (id, chain_id, seller_address, payment_reference, idempotency_key, status, outcome, request_payload, error_detail)
+  VALUES (gen_random_uuid(), ${CHAIN_ID}, '${SELLER2}', '${FAIL_REF}', gen_random_uuid(),
+          'failed', 'wc_api_error', '{}'::jsonb, 'simulated prior failure');" > /dev/null
+
+FAILCLOSED_CODE=$(curl -s -o /tmp/wc_failclosed_body.json -w '%{http_code}' -X POST \
+  -H "X-Circles-Service-Key: ${SERVICE_KEY}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"orderId\": \"test-failclosed-001\",
+    \"paymentReference\": \"${FAIL_REF}\",
+    \"items\": [ { \"sku\": \"${MARKETPLACE_SKU}\", \"quantity\": 1 } ]
+  }" \
+  "http://localhost:${WC_ADAPTER_PORT}/fulfill/${CHAIN_ID}/${SELLER2}")
+
+[ "$FAILCLOSED_CODE" = "502" ] || fail "Expected 502 fail-closed, got HTTP $FAILCLOSED_CODE: $(cat /tmp/wc_failclosed_body.json)"
+grep -q "wc_precreate_lookup_failed" /tmp/wc_failclosed_body.json \
+  || fail "Missing wc_precreate_lookup_failed code: $(cat /tmp/wc_failclosed_body.json)"
+ok "Unreachable shop during readback → 502 fail-closed, no order created"
+
+FAILCLOSED_ROW=$(psql_wc -At -c "SELECT status FROM wc_fulfillment_runs WHERE payment_reference = '${FAIL_REF}' LIMIT 1")
+[ "$FAILCLOSED_ROW" = "failed" ] || fail "Expected run status 'failed', got: $FAILCLOSED_ROW"
+ok "Run row marked failed with lookup error"
+
+psql_wc -At -c "DELETE FROM wc_connections WHERE seller_address = '${SELLER2}';
+                DELETE FROM wc_fulfillment_runs WHERE seller_address = '${SELLER2}';" > /dev/null
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo
