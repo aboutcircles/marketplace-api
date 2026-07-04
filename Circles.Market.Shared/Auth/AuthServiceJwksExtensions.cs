@@ -95,28 +95,39 @@ public static class AuthServiceJwksExtensions
                         var logger = context.HttpContext.RequestServices
                             .GetRequiredService<ILoggerFactory>()
                             .CreateLogger("AuthServiceJwks");
-                        logger.LogWarning(context.Exception,
-                            "Auth-service JWT validation failed: {Message}", context.Exception.Message);
 
-                        // Fallback: attempt token exchange (e.g. token was issued for
-                        // a different audience or by a federated issuer).
+                        // Direct RS256 validation failed. Before treating this as an
+                        // auth failure, try the token-exchange fallback: federated
+                        // issuers (e.g. Gnosis App) legitimately present tokens whose
+                        // kid/issuer/audience don't match this JWKS, so a direct
+                        // failure is expected for them. Only when the exchange also
+                        // declines is the request genuinely unauthenticated — so defer
+                        // logging until then, and never at WARNING with the exception,
+                        // to avoid an IDX-stacktrace on every recovered federated login.
                         string? rawToken = context.HttpContext.Request.Headers.Authorization
                             .FirstOrDefault()?.Replace("Bearer ", "", StringComparison.OrdinalIgnoreCase);
-                        if (string.IsNullOrEmpty(rawToken))
-                            return;
 
-                        var exchange = context.HttpContext.RequestServices
-                            .GetRequiredService<TokenExchangeService>();
-
-                        var principal = await exchange.TryExchangeAsync(
-                            rawToken, context.HttpContext.RequestAborted);
-
-                        if (principal is not null)
+                        if (!string.IsNullOrEmpty(rawToken))
                         {
-                            logger.LogInformation("Token exchange fallback succeeded");
-                            context.Principal = principal;
-                            context.Success();
+                            var exchange = context.HttpContext.RequestServices
+                                .GetRequiredService<TokenExchangeService>();
+                            var principal = await exchange.TryExchangeAsync(
+                                rawToken, context.HttpContext.RequestAborted);
+                            if (principal is not null)
+                            {
+                                logger.LogDebug("Token exchange fallback succeeded");
+                                context.Principal = principal;
+                                context.Success();
+                                return;
+                            }
                         }
+
+                        // Genuine failure (no bearer token, or the exchange declined):
+                        // an expected 401 for a stale/expired/foreign token, not an
+                        // application error. Log the reason at Debug, without the
+                        // stacktrace.
+                        logger.LogDebug("Auth-service JWT validation failed: {Message}",
+                            context.Exception.Message);
                     }
                 };
             });
