@@ -76,9 +76,15 @@ public sealed class TokenExchangeService
 
             if (!response.IsSuccessStatusCode)
             {
-                _log.LogWarning(
-                    "Token exchange returned {StatusCode} from {Url}",
-                    (int)response.StatusCode, _exchangeUrl);
+                // A declined exchange (token not exchangeable — expired, unknown
+                // issuer) is an expected 401/403, not an incident: log at Debug.
+                // Reserve WARNING for statuses that mean the exchange endpoint
+                // itself is unhealthy (5xx, throttling), which is actionable.
+                int status = (int)response.StatusCode;
+                if (status is 401 or 403)
+                    _log.LogDebug("Token exchange declined ({StatusCode}) at {Url}", status, _exchangeUrl);
+                else
+                    _log.LogWarning("Token exchange returned {StatusCode} from {Url}", status, _exchangeUrl);
                 return null;
             }
 
