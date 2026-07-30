@@ -283,6 +283,20 @@ public class OrderSnapshot
     // Generic JSON-LD outbox items attached to the order (buyer-visible only)
     [JsonPropertyName("outbox")]
     public List<OrderOutboxItemDto> Outbox { get; set; } = new();
+
+    /// <summary>
+    /// CRC payment amount in wei (18 decimals), loaded from the DB column
+    /// <c>paid_amount_wei</c>. Not part of the JSON-LD snapshot — populated at read time.
+    /// </summary>
+    [JsonIgnore]
+    public string? PaidAmountWei { get; set; }
+
+    /// <summary>
+    /// ISO-8601 timestamp of the on-chain payment, loaded from DB column <c>paid_at</c>.
+    /// Not part of the JSON-LD snapshot — populated at read time.
+    /// </summary>
+    [JsonIgnore]
+    public string? PaidAt { get; set; }
 }
 
 public sealed class OrderOutboxItemDto
