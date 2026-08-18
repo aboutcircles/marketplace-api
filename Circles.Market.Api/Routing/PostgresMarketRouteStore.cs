@@ -99,15 +99,17 @@ VALUES
     NULL,
     'http://market-adapter-unlock:{MARKET_UNLOCK_ADAPTER_PORT}/fulfill/{chain_id}/{seller}',
     true
-  ),
-  (
-    'woocommerce',
-    'http://market-adapter-woocommerce:{MARKET_WOOCOMMERCE_ADAPTER_PORT}/inventory/{chain_id}/{seller}/{sku}',
-    'http://market-adapter-woocommerce:{MARKET_WOOCOMMERCE_ADAPTER_PORT}/availability/{chain_id}/{seller}/{sku}',
-    'http://market-adapter-woocommerce:{MARKET_WOOCOMMERCE_ADAPTER_PORT}/fulfill/{chain_id}/{seller}',
-    true
   )
 ON CONFLICT (offer_type) DO NOTHING;
+
+-- Retire the withdrawn 'woocommerce' offer type. The seed above uses
+-- ON CONFLICT DO NOTHING, so dropping it from the VALUES list alone would leave
+-- the row behind forever on databases that were seeded while the adapter existed.
+-- Guarded on there being no routes still pointing at it, so an operator who is
+-- mid-migration keeps their data and just sees the row survive.
+DELETE FROM offer_types
+ WHERE offer_type = 'woocommerce'
+   AND NOT EXISTS (SELECT 1 FROM market_service_routes WHERE offer_type = 'woocommerce');
 ";
 
             await cmd.ExecuteNonQueryAsync(ct);

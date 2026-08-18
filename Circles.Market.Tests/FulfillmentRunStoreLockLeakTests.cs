@@ -1,7 +1,6 @@
 using Circles.Market.Adapters.CodeDispenser;
 using Circles.Market.Adapters.Odoo.Db;
 using Circles.Market.Adapters.Unlock.Db;
-using Circles.Market.Adapters.WooCommerce.Db;
 using Circles.Market.Fulfillment.Core;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -104,32 +103,6 @@ CREATE TABLE IF NOT EXISTS {table} (
 
         await MarkWithCancelledTokenAsync(ct => store.MarkOkAsync(ChainId, Seller, payRef, ct));
         Assert.That(await store.GetStatusAsync(ChainId, Seller, payRef, CancellationToken.None), Is.EqualTo("ok"));
-    }
-
-    [Test]
-    public async Task WooCommerce_terminal_writes_survive_cancelled_caller_token()
-    {
-        await ExecAsync(_conn, @"
-CREATE TABLE IF NOT EXISTS wc_fulfillment_runs (
-  id uuid NOT NULL DEFAULT gen_random_uuid(), chain_id bigint NOT NULL, seller_address text NOT NULL,
-  payment_reference text NOT NULL, idempotency_key uuid NOT NULL UNIQUE, wc_order_id integer NULL,
-  wc_order_number text NULL, status text NOT NULL, outcome text NULL, error_detail text NULL,
-  request_payload jsonb NOT NULL DEFAULT '{}', response_payload jsonb NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz NULL, PRIMARY KEY (id));
-CREATE UNIQUE INDEX IF NOT EXISTS ux_wc_fulfillment_runs_natural
-  ON wc_fulfillment_runs(chain_id, seller_address, payment_reference);");
-
-        const string payRef = "pay_LEAK_wc";
-        await ExecAsync(_conn, "DELETE FROM wc_fulfillment_runs WHERE payment_reference=@p;", p => p.AddWithValue("@p", payRef));
-
-        var store = new PostgresWooCommerceFulfillmentRunStore(_conn, NullLogger<PostgresWooCommerceFulfillmentRunStore>.Instance);
-        var (acquired, status) = await store.TryBeginAsync(ChainId, Seller, payRef, "ord_LEAK_wc", CancellationToken.None);
-        Assert.That(acquired, Is.True);
-        Assert.That(status, Is.EqualTo("pending"));
-
-        await MarkWithCancelledTokenAsync(ct => store.MarkErrorAsync(ChainId, Seller, payRef, "simulated timeout abort", ct));
-        Assert.That(await store.GetStatusAsync(ChainId, Seller, payRef, CancellationToken.None), Is.EqualTo("failed"),
-            "run must transition off 'pending' even when the caller token was cancelled");
     }
 
     private static async Task MarkWithCancelledTokenAsync(Func<CancellationToken, Task> mark)

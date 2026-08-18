@@ -16,8 +16,6 @@ public sealed class EnvOutboundServiceAuthProvider : IOutboundServiceAuthProvide
     private readonly string _unlockOrigin;
     private readonly string? _unlockToken;
 
-    private readonly string _woocommerceOrigin;
-    private readonly string? _woocommerceToken;
 
     public EnvOutboundServiceAuthProvider(ILogger<EnvOutboundServiceAuthProvider> log)
     {
@@ -32,7 +30,6 @@ public sealed class EnvOutboundServiceAuthProvider : IOutboundServiceAuthProvide
         int odooPort = GetPortEnv("MARKET_ODOO_ADAPTER_PORT", 5678);
         int codedispPort = GetPortEnv("MARKET_CODE_DISPENSER_PORT", 5680);
         int unlockPort = GetPortEnv("MARKET_UNLOCK_ADAPTER_PORT", 5682);
-        int woocommercePort = GetPortEnv("MARKET_WOOCOMMERCE_ADAPTER_PORT", 5679);
 
         var odooOriginOverride = Environment.GetEnvironmentVariable("MARKET_ODOO_ADAPTER_ORIGIN");
         _odooOrigin = !string.IsNullOrWhiteSpace(odooOriginOverride)
@@ -49,20 +46,15 @@ public sealed class EnvOutboundServiceAuthProvider : IOutboundServiceAuthProvide
             ? NormalizeOriginString(unlockOriginOverride)
             : $"http://market-adapter-unlock:{unlockPort}";
 
-        var woocommerceOriginOverride = Environment.GetEnvironmentVariable("MARKET_WOOCOMMERCE_ADAPTER_ORIGIN");
-        _woocommerceOrigin = !string.IsNullOrWhiteSpace(woocommerceOriginOverride)
-            ? NormalizeOriginString(woocommerceOriginOverride)
-            : $"http://market-adapter-woocommerce:{woocommercePort}";
 
         var shared = ReadToken("CIRCLES_SERVICE_KEY");
 
         _odooToken = ReadToken("MARKET_ODOO_ADAPTER_TOKEN") ?? shared;
         _codedispToken = ReadToken("MARKET_CODE_DISPENSER_TOKEN") ?? shared;
         _unlockToken = ReadToken("MARKET_UNLOCK_ADAPTER_TOKEN") ?? shared;
-        _woocommerceToken = ReadToken("MARKET_WOOCOMMERCE_ADAPTER_TOKEN") ?? shared;
 
-        _log.LogInformation("EnvOutboundServiceAuthProvider configured: header={HeaderName} odooOrigin={OdooOrigin} codedispOrigin={CodeDispOrigin} unlockOrigin={UnlockOrigin} woocommerceOrigin={WooCommerceOrigin}",
-            _headerName, _odooOrigin, _codedispOrigin, _unlockOrigin, _woocommerceOrigin);
+        _log.LogInformation("EnvOutboundServiceAuthProvider configured: header={HeaderName} odooOrigin={OdooOrigin} codedispOrigin={CodeDispOrigin} unlockOrigin={UnlockOrigin}",
+            _headerName, _odooOrigin, _codedispOrigin, _unlockOrigin);
     }
 
     public Task<(string headerName, string apiKey)?> TryGetHeaderAsync(
@@ -96,11 +88,6 @@ public sealed class EnvOutboundServiceAuthProvider : IOutboundServiceAuthProvide
         if (string.Equals(origin, _unlockOrigin, StringComparison.OrdinalIgnoreCase))
         {
             return Task.FromResult<(string headerName, string apiKey)?>(MakeHeaderOrNull(_unlockToken, "unlock", origin, serviceKind));
-        }
-
-        if (string.Equals(origin, _woocommerceOrigin, StringComparison.OrdinalIgnoreCase))
-        {
-            return Task.FromResult<(string headerName, string apiKey)?>(MakeHeaderOrNull(_woocommerceToken, "woocommerce", origin, serviceKind));
         }
 
         return Task.FromResult<(string headerName, string apiKey)?>(null);
