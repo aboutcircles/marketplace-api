@@ -292,21 +292,8 @@ publicBuilder.Services.AddSwaggerGen(c =>
 // HttpClient for dereferencing availability/inventory feeds
 publicBuilder.Services.AddHttpClient();
 
-// CORS: allow all origins with credentials support
-// SetIsOriginAllowed(_ => true) + AllowCredentials() returns the specific
-// requesting origin (not *) with Access-Control-Allow-Credentials: true.
-// Required for auth flow: browser sends credentials with cross-origin requests.
 publicBuilder.Services.AddCors(options =>
-{
-    options.AddPolicy("AllowAll", policy =>
-        policy
-            .SetIsOriginAllowed(_ => true)
-            .AllowAnyMethod()
-            .AllowAnyHeader()
-            .AllowCredentials()
-            .WithExposedHeaders("X-Next-Cursor", "Link")
-    );
-});
+    options.AddPolicy(PublicCorsPolicy.Name, PublicCorsPolicy.Configure));
 
 // Auth: auth-service JWKS (RS256) — sole buyer authentication
 // Clients authenticate via the auth-service challenge/verify flow
@@ -382,7 +369,7 @@ publicApp.UseSwaggerUI(c =>
     c.RoutePrefix = "docs"; // UI at /docs
 });
 
-publicApp.UseCors("AllowAll");
+publicApp.UseCors(PublicCorsPolicy.Name);
 if (rateLimitEnabled)
 {
     publicApp.UseRateLimiter();
