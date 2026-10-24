@@ -27,6 +27,17 @@ public sealed class FulfillmentRequest
     [Required]
     public string Trigger { get; set; } = string.Empty;
 
+    /// <summary>
+    /// CRC payment amount in wei (18 decimals). Optional — populated by the main API
+    /// when the payment poller captures the on-chain PaymentReceived event.
+    /// </summary>
+    public string? AmountWei { get; set; }
+
+    /// <summary>
+    /// ISO-8601 timestamp of the on-chain payment confirmation. Optional.
+    /// </summary>
+    public string? PaymentTimestamp { get; set; }
+
     public bool TryNormalizeAndValidate(out string? error)
     {
         error = null;
