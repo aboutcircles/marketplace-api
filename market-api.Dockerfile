@@ -24,7 +24,7 @@ COPY Circles.Market.Fulfillment.Core/ Circles.Market.Fulfillment.Core/
 
 RUN dotnet publish Circles.Market.Api/Circles.Market.Api.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS final
+FROM mcr.microsoft.com/dotnet/aspnet:11.0-alpine AS final
 
 # krb5-libs: Npgsql probes for GSSAPI on first PG connection; without it logs spurious ERROR
 RUN apk add --no-cache krb5-libs
