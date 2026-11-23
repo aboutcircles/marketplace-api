@@ -9,7 +9,7 @@
     <PackageReference Include="Circles.Profiles.Models" Version="1.0.2" />
     <PackageReference Include="Circles.Profiles.Sdk" Version="1.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.2" />
-    <PackageReference Include="Nethereum.Web3" Version="5.8.0" />
+    <PackageReference Include="Nethereum.Web3" Version="7.1.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.0" />
     <PackageReference Include="Npgsql" Version="10.0.1" />
